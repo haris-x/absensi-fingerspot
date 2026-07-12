@@ -1,10 +1,10 @@
 module.exports = {
   apps: [
     {
-      name: "absensi-app",
+      name: "absensi-app-madrasah",
       script: "node_modules/next/dist/bin/next",
-      args: "start -p 3001",
-      cwd: "c:/xampp/htdocs/Absensi",
+      args: "start -p 3004",
+      cwd: "e:/xampp/htdocs/absensi-fingerspot",
       instances: 1,
       autorestart: true,
       watch: false,
@@ -14,9 +14,9 @@ module.exports = {
       }
     },
     {
-      name: "whatsapp-bot",
+      name: "whatsapp-bot-madrasah",
       script: "bot.js",
-      cwd: "c:/xampp/htdocs/Absensi/whatsapp-bot",
+      cwd: "e:/xampp/htdocs/absensi-fingerspot/whatsapp-bot",
       instances: 1,
       exec_mode: "fork",
       autorestart: true,
