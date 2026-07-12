@@ -6,7 +6,8 @@ export const dynamic = 'force-dynamic';
 export async function POST() {
   try {
     const botPort = process.env.WA_BOT_PORT || '3002';
-    const res = await fetch(`http://127.0.0.1:${botPort}/api/sync`, {
+    const botBaseUrl = process.env.WA_BOT_URL || `http://127.0.0.1:${botPort}`;
+    const res = await fetch(`${botBaseUrl}/api/sync`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: AbortSignal.timeout(60000) // 60 second timeout for sync
@@ -29,7 +30,8 @@ export async function POST() {
 export async function GET() {
   try {
     const botPort = process.env.WA_BOT_PORT || '3002';
-    const res = await fetch(`http://127.0.0.1:${botPort}/api/device-status`, {
+    const botBaseUrl = process.env.WA_BOT_URL || `http://127.0.0.1:${botPort}`;
+    const res = await fetch(`${botBaseUrl}/api/device-status`, {
       signal: AbortSignal.timeout(10000) // 10 second timeout
     });
 

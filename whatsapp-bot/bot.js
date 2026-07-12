@@ -16,7 +16,11 @@ let config = {
     port: parseInt(process.env.DB_PORT || '3306'),
     user: process.env.DB_USER || 'root',
     password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'fin_pro'
+    database: process.env.DB_NAME || 'fin_pro',
+    ssl: (process.env.DB_SSL === 'true' || process.env.DB_HOST?.includes('tidbcloud.com')) ? {
+      minVersion: 'TLSv1.2',
+      rejectUnauthorized: true
+    } : undefined
   },
   whatsapp: {
     group_jid: process.env.WA_GROUP_JID || '',
@@ -38,6 +42,10 @@ function reloadConfig() {
     config.db.user = process.env.DB_USER || config.db.user;
     config.db.password = process.env.DB_PASSWORD || config.db.password;
     config.db.database = process.env.DB_NAME || config.db.database;
+    config.db.ssl = (process.env.DB_SSL === 'true' || process.env.DB_HOST?.includes('tidbcloud.com')) ? {
+      minVersion: 'TLSv1.2',
+      rejectUnauthorized: true
+    } : undefined;
     config.whatsapp.group_jid = process.env.WA_GROUP_JID || config.whatsapp.group_jid;
     config.whatsapp.send_time = process.env.WA_SEND_TIME || config.whatsapp.send_time;
     config.whatsapp.reconciliation_enabled = process.env.WA_RECONCILIATION_ENABLED !== 'false';
@@ -425,7 +433,8 @@ client.on('message_create', async (msg) => {
         port: config.db.port,
         user: config.db.user,
         password: config.db.password,
-        database: config.db.database
+        database: config.db.database,
+        ssl: config.db.ssl
       });
 
       // Fetch absent employees
@@ -501,7 +510,8 @@ async function sendAbsentReport() {
       port: config.db.port,
       user: config.db.user,
       password: config.db.password,
-      database: config.db.database
+      database: config.db.database,
+      ssl: config.db.ssl
     });
 
     // Fetch absent employees

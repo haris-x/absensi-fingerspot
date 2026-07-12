@@ -24,10 +24,11 @@ export async function GET(req) {
   const action = searchParams.get('action');
   
   const botPort = process.env.WA_BOT_PORT || '3002';
+  const botBaseUrl = process.env.WA_BOT_URL || `http://127.0.0.1:${botPort}`;
   
   if (action === 'groups') {
     try {
-      const res = await fetch(`http://127.0.0.1:${botPort}/api/groups`, {
+      const res = await fetch(`${botBaseUrl}/api/groups`, {
         cache: 'no-store',
         signal: AbortSignal.timeout(15000) // 15 second timeout for group fetch
       });
@@ -51,7 +52,7 @@ export async function GET(req) {
 
   // Default: Get WhatsApp Bot Status
   try {
-    const res = await fetch(`http://127.0.0.1:${botPort}/api/status`, {
+    const res = await fetch(`${botBaseUrl}/api/status`, {
       cache: 'no-store',
       signal: AbortSignal.timeout(10000) // 10 second timeout
     });
@@ -86,6 +87,7 @@ export async function POST(req) {
     }
 
     const botPort = process.env.WA_BOT_PORT || '3002';
+    const botBaseUrl = process.env.WA_BOT_URL || `http://127.0.0.1:${botPort}`;
 
     if (body.action === 'save-config') {
       const { groupJid, sendTime, reconciliationEnabled } = body;
@@ -130,7 +132,7 @@ export async function POST(req) {
     }
 
     // Default: Trigger manual absensi report send
-    const res = await fetch(`http://127.0.0.1:${botPort}/api/send-absent`, {
+    const res = await fetch(`${botBaseUrl}/api/send-absent`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       cache: 'no-store',

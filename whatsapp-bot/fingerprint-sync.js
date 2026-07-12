@@ -29,6 +29,10 @@ function getConfig() {
       user: process.env.DB_USER || 'root',
       password: process.env.DB_PASSWORD || '',
       database: process.env.DB_NAME || 'fin_pro',
+      ssl: (process.env.DB_SSL === 'true' || process.env.DB_HOST?.includes('tidbcloud.com')) ? {
+        minVersion: 'TLSv1.2',
+        rejectUnauthorized: true
+      } : undefined
     }
   };
 }
@@ -97,6 +101,7 @@ async function syncFromDevice() {
       user: config.db.user,
       password: config.db.password,
       database: config.db.database,
+      ssl: config.db.ssl,
     });
 
     const [rowsBefore] = await connection.execute('SELECT COUNT(*) as count FROM att_log');
@@ -132,6 +137,7 @@ async function syncFromDevice() {
       user: config.db.user,
       password: config.db.password,
       database: config.db.database,
+      ssl: config.db.ssl,
     });
 
     const [rowsAfter] = await connection.execute('SELECT COUNT(*) as count FROM att_log');

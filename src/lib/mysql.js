@@ -9,7 +9,11 @@ const pool = mysql.createPool({
   database: process.env.DB_NAME || 'fin_pro',
   waitForConnections: true,
   connectionLimit: 10,
-  queueLimit: 0
+  queueLimit: 0,
+  ssl: (process.env.DB_SSL === 'true' || process.env.DB_HOST?.includes('tidbcloud.com')) ? {
+    minVersion: 'TLSv1.2',
+    rejectUnauthorized: true
+  } : undefined
 });
 
 /**
