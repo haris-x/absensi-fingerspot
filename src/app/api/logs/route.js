@@ -9,7 +9,8 @@ export async function GET(request) {
     const startDate = searchParams.get('startDate');
     const endDate = searchParams.get('endDate');
     const search = searchParams.get('search');
-    const limit = parseInt(searchParams.get('limit') || '2000');
+    const limitParam = parseInt(searchParams.get('limit') || '2000', 10);
+    const limitVal = isNaN(limitParam) ? 2000 : Math.max(1, limitParam);
 
     let sql = `
       SELECT al.pin, al.scan_date as date_time, al.verifymode as verified, al.inoutmode as status, 
@@ -36,8 +37,7 @@ export async function GET(request) {
       params.push(`%${search}%`, search);
     }
 
-    sql += ' ORDER BY al.scan_date DESC LIMIT ?';
-    params.push(limit);
+    sql += ` ORDER BY al.scan_date DESC LIMIT ${limitVal}`;
 
     const logs = await dbQuery(sql, params);
 
