@@ -9,7 +9,10 @@ export async function POST() {
     const botBaseUrl = process.env.WA_BOT_URL || `http://127.0.0.1:${botPort}`;
     const res = await fetch(`${botBaseUrl}/api/sync`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.WA_API_KEY || 'madrasah_wa101'
+      },
       signal: AbortSignal.timeout(60000) // 60 second timeout for sync
     });
 
@@ -32,6 +35,9 @@ export async function GET() {
     const botPort = process.env.WA_BOT_PORT || '3002';
     const botBaseUrl = process.env.WA_BOT_URL || `http://127.0.0.1:${botPort}`;
     const res = await fetch(`${botBaseUrl}/api/device-status`, {
+      headers: {
+        'x-api-key': process.env.WA_API_KEY || 'madrasah_wa101'
+      },
       signal: AbortSignal.timeout(10000) // 10 second timeout
     });
 

@@ -29,6 +29,9 @@ export async function GET(req) {
   if (action === 'groups') {
     try {
       const res = await fetch(`${botBaseUrl}/api/groups`, {
+        headers: {
+          'x-api-key': process.env.WA_API_KEY || 'madrasah_wa101'
+        },
         cache: 'no-store',
         signal: AbortSignal.timeout(15000) // 15 second timeout for group fetch
       });
@@ -53,6 +56,9 @@ export async function GET(req) {
   // Default: Get WhatsApp Bot Status
   try {
     const res = await fetch(`${botBaseUrl}/api/status`, {
+      headers: {
+        'x-api-key': process.env.WA_API_KEY || 'madrasah_wa101'
+      },
       cache: 'no-store',
       signal: AbortSignal.timeout(10000) // 10 second timeout
     });
@@ -134,7 +140,10 @@ export async function POST(req) {
     // Default: Trigger manual absensi report send
     const res = await fetch(`${botBaseUrl}/api/send-absent`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.WA_API_KEY || 'madrasah_wa101'
+      },
       cache: 'no-store',
       signal: AbortSignal.timeout(120000) // 120 second timeout
     });

@@ -592,10 +592,31 @@ app.use(express.json());
 // Enable CORS for Next.js dashboard requests
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, x-api-key');
   res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   next();
 });
+
+// API Key verification middleware
+app.use((req, res, next) => {
+  // Allow preflight OPTIONS requests without auth
+  if (req.method === 'OPTIONS') {
+    return next();
+  }
+  
+  const apiKey = process.env.WA_API_KEY || 'madrasah_wa101';
+  const clientKey = req.headers['x-api-key'] || req.headers['authorization'];
+  
+  if (clientKey !== apiKey) {
+    console.warn(`🔒 Request blocked: Unauthorized access attempt to ${req.path} from ${req.ip}`);
+    return res.status(401).json({
+      status: 'error',
+      message: 'Unauthorized: Invalid or missing API Key.'
+    });
+  }
+  next();
+});
+
 
 // Trigger endpoint
 app.post('/api/send-absent', async (req, res) => {
