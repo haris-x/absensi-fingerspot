@@ -30,7 +30,7 @@ export async function GET(request) {
       `SELECT pin, DATE_FORMAT(scan_date, '%Y-%m-%d') as scan_day, MIN(scan_date) as first_scan, MAX(scan_date) as last_scan, COUNT(*) as scan_count
        FROM att_log
        WHERE DATE(scan_date) >= ? AND DATE(scan_date) <= ?
-       GROUP BY pin, DATE(scan_date)`,
+       GROUP BY pin, DATE_FORMAT(scan_date, '%Y-%m-%d')`,
       [startDateStr, endDateStr]
     );
 

@@ -48,7 +48,7 @@ export async function GET() {
       `SELECT DATE_FORMAT(scan_date, '%Y-%m-%d') as date, COUNT(*) as count 
        FROM att_log 
        WHERE DATE(scan_date) >= ? 
-       GROUP BY DATE(scan_date)
+       GROUP BY DATE_FORMAT(scan_date, '%Y-%m-%d')
        ORDER BY date ASC`,
       [startDateStr]
     );
