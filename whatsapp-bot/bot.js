@@ -58,6 +58,8 @@ function reloadConfig() {
 
 // Helper to sync fingerprint data directly from device via TCP (replaces PowerShell GUI hack)
 const { syncFromDevice, checkDeviceStatus } = require('./fingerprint-sync');
+// Helper to migrate local database to TiDB Cloud
+const { migrate: uploadToTiDB } = require('./migrate-to-tidb');
 
 let isSyncing = false;
 let lastSyncResult = null;
@@ -72,7 +74,14 @@ async function triggerFingerprintSync() {
   try {
     console.log('🔄 Memulai sinkronisasi data mesin fingerprint via TCP...');
     lastSyncResult = await syncFromDevice();
-    console.log(`✅ Sinkronisasi selesai: ${lastSyncResult.message}`);
+    console.log(`✅ Sinkronisasi lokal selesai: ${lastSyncResult.message}`);
+    
+    // Only upload to TiDB Cloud if local sync was successful
+    if (lastSyncResult.status === 'success') {
+      console.log('🚀 Memulai upload data baru ke TiDB Cloud...');
+      await uploadToTiDB();
+      console.log('✅ Upload data ke TiDB Cloud selesai.');
+    }
     return lastSyncResult;
   } catch (err) {
     console.error(`❌ GAGAL Sinkronisasi Fingerprint: ${err.message}`);
@@ -751,6 +760,10 @@ cron.schedule(cronExpr, async () => {
 
   if (isReady) {
     try {
+      // Auto sync locally and to TiDB Cloud before generating report
+      console.log('🔄 Menjalankan sinkronisasi sebelum laporan harian...');
+      await triggerFingerprintSync();
+
       await sendAbsentReport();
     } catch (err) {
       console.error('Gagal mengirim laporan terjadwal:', err.message);
