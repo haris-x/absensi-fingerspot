@@ -3,7 +3,7 @@ name: Deploy Next.js Dashboard to Oracle Cloud
 on:
   push:
     branches:
-      - main  # Memicu deploy otomatis setiap kali ada push ke branch main
+      - absensi-madrasah  # Memicu deploy otomatis setiap kali ada push ke branch ini
 
 jobs:
   deploy:
