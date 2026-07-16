@@ -1061,7 +1061,7 @@ app.get('/api/groups', async (req, res) => {
 
   try {
     const groups = chats
-      .filter(chat => chat.isGroup)
+      .filter(chat => chat.isGroup || (chat.id && chat.id._serialized && chat.id._serialized.endsWith('@g.us')))
       .map(g => ({
         id: g.id._serialized,
         name: g.name
