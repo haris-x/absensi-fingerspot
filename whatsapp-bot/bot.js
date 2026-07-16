@@ -698,6 +698,65 @@ app.get('/api/status', (req, res) => {
   });
 });
 
+// POST: Save config from cloud dashboard to local .env.local
+app.post('/api/config', async (req, res) => {
+  try {
+    const { groupJid, sendTime, reconciliationEnabled } = req.body;
+    const envPath = path.join(__dirname, '..', '.env.local');
+    if (!fs.existsSync(envPath)) {
+      return res.status(400).json({
+        status: 'error',
+        message: '.env.local tidak ditemukan di komputer lokal.'
+      });
+    }
+
+    let envContent = fs.readFileSync(envPath, 'utf8');
+
+    function updateEnvValue(content, key, value) {
+      const regex = new RegExp(\`^\${key}=.*\$\`, 'm');
+      if (regex.test(content)) {
+        return content.replace(regex, \`\${key}=\${value}\`);
+      } else {
+        const separator = content.endsWith('\n') ? '' : '\\n';
+        return \`\${content}\${separator}\${key}=\${value}\`;
+      }
+    }
+
+    if (groupJid !== undefined) {
+      envContent = updateEnvValue(envContent, 'WA_GROUP_JID', groupJid);
+    }
+    if (sendTime !== undefined) {
+      envContent = updateEnvValue(envContent, 'WA_SEND_TIME', sendTime);
+    }
+    if (reconciliationEnabled !== undefined) {
+      envContent = updateEnvValue(envContent, 'WA_RECONCILIATION_ENABLED', String(reconciliationEnabled));
+    }
+
+    fs.writeFileSync(envPath, envContent, 'utf8');
+
+    // Reload the config in memory
+    reloadConfig();
+
+    // Trigger PM2 restart in background
+    const { exec } = require('child_process');
+    setTimeout(() => {
+      exec('pm2 restart whatsapp-bot-madrasah || pm2 restart whatsapp-bot', (err) => {
+        if (err) console.error('Gagal me-restart PM2 bot lokal:', err.message);
+      });
+    }, 1000);
+
+    res.json({
+      status: 'success',
+      message: 'Konfigurasi bot lokal berhasil diperbarui dan bot sedang memuat ulang.'
+    });
+  } catch (err) {
+    res.status(500).json({
+      status: 'error',
+      message: 'Gagal memperbarui konfigurasi bot lokal: ' + err.message
+    });
+  }
+});
+
 // Get list of all WhatsApp groups the bot is in
 app.get('/api/groups', async (req, res) => {
   if (!isReady) {
