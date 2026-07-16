@@ -92,7 +92,7 @@ function applySelfHealingPatches() {
             window.WWebJS.getChatModel(chat),
         );
         return await Promise.all(chatPromises);
-    };`.replace(/\\r\\n/g, '\\n');
+    };`.replace(/\r\n/g, '\n');
 
       if (content.includes(targetGetChats)) {
         content = content.replace(targetGetChats,
@@ -112,7 +112,7 @@ function applySelfHealingPatches() {
       const targetGetChatModel = `    window.WWebJS.getChatModel = async (chat, { isChannel = false } = {}) => {
         if (!chat) return null;
 
-        const model = chat.serialize();`.replace(/\\r\\n/g, '\\n');
+        const model = chat.serialize();`.replace(/\r\n/g, '\n');
 
       if (content.includes(targetGetChatModel)) {
         content = content.replace(targetGetChatModel,
@@ -129,7 +129,7 @@ function applySelfHealingPatches() {
         delete model.unsyncedButtonReplies;
 
         return model;
-    };`.replace(/\\r\\n/g, '\\n');
+    };`.replace(/\r\n/g, '\n');
 
       if (content.includes(targetGetChatModelEnd)) {
         content = content.replace(targetGetChatModelEnd,
