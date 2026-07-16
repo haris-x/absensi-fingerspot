@@ -23,10 +23,10 @@ const targetConfig = {
   user: process.env.TIDB_USER || '',
   password: process.env.TIDB_PASSWORD || '',
   database: process.env.TIDB_NAME || 'fin_pro',
-  ssl: {
+  ssl: (process.env.TIDB_HOST?.includes('tidbcloud.com') || process.env.TIDB_SSL === 'true') ? {
     minVersion: 'TLSv1.2',
     rejectUnauthorized: true
-  }
+  } : undefined
 };
 
 async function migrate() {
