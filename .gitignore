@@ -33,6 +33,8 @@ yarn-error.log*
 whatsapp-bot/config.json
 whatsapp-bot/.wwebjs_auth/
 whatsapp-bot/.wwebjs_cache/
+.wwebjs_auth/
+.wwebjs_cache/
 whatsapp-bot/qr.html
 
 # vercel

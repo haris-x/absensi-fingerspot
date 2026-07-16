@@ -713,12 +713,12 @@ app.post('/api/config', async (req, res) => {
     let envContent = fs.readFileSync(envPath, 'utf8');
 
     function updateEnvValue(content, key, value) {
-      const regex = new RegExp(\`^\${key}=.*\$\`, 'm');
+      const regex = new RegExp(`^${key}=.*$`, 'm');
       if (regex.test(content)) {
-        return content.replace(regex, \`\${key}=\${value}\`);
+        return content.replace(regex, `${key}=${value}`);
       } else {
-        const separator = content.endsWith('\n') ? '' : '\\n';
-        return \`\${content}\${separator}\${key}=\${value}\`;
+        const separator = content.endsWith('\n') ? '' : '\n';
+        return `${content}${separator}${key}=${value}`;
       }
     }
 
