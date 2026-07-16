@@ -171,28 +171,30 @@ client.on('ready', async () => {
     timezone: 'Asia/Jakarta'
   });
 
-  // Retrieve and print all groups
-  try {
-    const chats = await client.getChats();
-    const groups = chats.filter(chat => chat.isGroup);
+  // Retrieve and print all groups (with 5 seconds delay to allow store initialization)
+  setTimeout(async () => {
+    try {
+      const chats = await client.getChats();
+      const groups = chats.filter(chat => chat.isGroup);
 
-    console.log('\n=============================================================');
-    console.log('=== DAFTAR GRUP WHATSAPP ANDA ===');
-    console.log('Silakan cari nama grup target Anda, lalu salin JID-nya');
-    console.log('dan tempelkan ke kolom "group_jid" di file whatsapp-bot/config.json');
-    console.log('=============================================================');
+      console.log('\n=============================================================');
+      console.log('=== DAFTAR GRUP WHATSAPP ANDA ===');
+      console.log('Silakan cari nama grup target Anda, lalu salin JID-nya');
+      console.log('dan tempelkan ke kolom "group_jid" di file whatsapp-bot/config.json');
+      console.log('=============================================================');
 
-    if (groups.length === 0) {
-      console.log('Nomor WhatsApp ini tidak berada di grup mana pun.');
-    } else {
-      groups.forEach(g => {
-        console.log(`- Nama: "${g.name}" | JID: ${g.id._serialized}`);
-      });
+      if (groups.length === 0) {
+        console.log('Nomor WhatsApp ini tidak berada di grup mana pun.');
+      } else {
+        groups.forEach(g => {
+          console.log(`- Nama: "${g.name}" | JID: ${g.id._serialized}`);
+        });
+      }
+      console.log('=============================================================\n');
+    } catch (err) {
+      console.error('Gagal memuat daftar grup WhatsApp pada inisialisasi:', err.message);
     }
-    console.log('=============================================================\n');
-  } catch (err) {
-    console.error('Gagal memuat daftar grup WhatsApp:', err.message);
-  }
+  }, 5000);
 });
 
 // Disconnected event
@@ -771,8 +773,24 @@ app.get('/api/groups', async (req, res) => {
     });
   }
 
+  let chats;
   try {
-    const chats = await client.getChats();
+    chats = await client.getChats();
+  } catch (firstErr) {
+    console.warn('⚠️ Gagal memuat grup pada percobaan pertama. Mencoba ulang dalam 3 detik...', firstErr.message);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      chats = await client.getChats();
+    } catch (secondErr) {
+      console.error('❌ Gagal mengambil daftar grup WhatsApp setelah mencoba ulang:', secondErr.message);
+      return res.status(500).json({
+        status: 'error',
+        message: 'Gagal mengambil daftar grup: ' + secondErr.message
+      });
+    }
+  }
+
+  try {
     const groups = chats
       .filter(chat => chat.isGroup)
       .map(g => ({
@@ -784,10 +802,9 @@ app.get('/api/groups', async (req, res) => {
       groups
     });
   } catch (err) {
-    console.error('Gagal mengambil daftar grup WhatsApp:', err.message);
     res.status(500).json({
       status: 'error',
-      message: 'Gagal mengambil daftar grup: ' + err.message
+      message: 'Gagal memproses daftar grup: ' + err.message
     });
   }
 });
