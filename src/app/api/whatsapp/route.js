@@ -25,12 +25,13 @@ export async function GET(req) {
   
   const botPort = process.env.WA_BOT_PORT || '3002';
   const botBaseUrl = process.env.WA_BOT_URL || `http://127.0.0.1:${botPort}`;
+  const apiKey = process.env.WA_API_KEY || 'madrasah_wa101';
   
   if (action === 'groups') {
     try {
       const res = await fetch(`${botBaseUrl}/api/groups`, {
         headers: {
-          'x-api-key': process.env.WA_API_KEY || 'madrasah_wa101'
+          'x-api-key': apiKey
         },
         cache: 'no-store',
         signal: AbortSignal.timeout(15000) // 15 second timeout for group fetch
@@ -55,9 +56,10 @@ export async function GET(req) {
 
   // Default: Get WhatsApp Bot Status
   try {
+    console.log(`[Next.js API] Calling bot: ${botBaseUrl}/api/status with API key: "${apiKey}"`);
     const res = await fetch(`${botBaseUrl}/api/status`, {
       headers: {
-        'x-api-key': process.env.WA_API_KEY || 'madrasah_wa101'
+        'x-api-key': apiKey
       },
       cache: 'no-store',
       signal: AbortSignal.timeout(10000) // 10 second timeout
@@ -94,11 +96,12 @@ export async function POST(req) {
 
     const botPort = process.env.WA_BOT_PORT || '3002';
     const botBaseUrl = process.env.WA_BOT_URL || `http://127.0.0.1:${botPort}`;
+    const apiKey = process.env.WA_API_KEY || 'madrasah_wa101';
 
     if (body.action === 'save-config') {
       const { groupJid, sendTime, reconciliationEnabled } = body;
 
-      // 1. Send configuration update to the local WhatsApp bot via Cloudflare Tunnel
+      // 1. Send configuration update to the local WhatsApp bot via API
       let botUpdateSuccess = false;
       let botUpdateMessage = '';
       try {
@@ -106,7 +109,7 @@ export async function POST(req) {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-api-key': process.env.WA_API_KEY || 'madrasah_wa101'
+            'x-api-key': apiKey
           },
           body: JSON.stringify({ groupJid, sendTime, reconciliationEnabled }),
           signal: AbortSignal.timeout(15000)
@@ -162,7 +165,7 @@ export async function POST(req) {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
-        'x-api-key': process.env.WA_API_KEY || 'madrasah_wa101'
+        'x-api-key': apiKey
       },
       cache: 'no-store',
       signal: AbortSignal.timeout(120000) // 120 second timeout

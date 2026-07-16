@@ -24,6 +24,7 @@ let config = {
   },
   whatsapp: {
     group_jid: process.env.WA_GROUP_JID || '',
+    faktur_group_jid: process.env.WA_FAKTUR_GROUP_JID || '',
     send_time: process.env.WA_SEND_TIME || '07:35',
     reconciliation_enabled: process.env.WA_RECONCILIATION_ENABLED !== 'false'
   },
@@ -47,6 +48,7 @@ function reloadConfig() {
       rejectUnauthorized: true
     } : undefined;
     config.whatsapp.group_jid = process.env.WA_GROUP_JID || config.whatsapp.group_jid;
+    config.whatsapp.faktur_group_jid = process.env.WA_FAKTUR_GROUP_JID || config.whatsapp.faktur_group_jid;
     config.whatsapp.send_time = process.env.WA_SEND_TIME || config.whatsapp.send_time;
     config.whatsapp.reconciliation_enabled = process.env.WA_RECONCILIATION_ENABLED !== 'false';
     config.ipos.api_url = process.env.IPOS_API_URL || config.ipos.api_url;
@@ -97,12 +99,17 @@ const client = new Client({
   authStrategy: new LocalAuth(),
   webVersionCache: {
     type: 'remote',
-    remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
+    remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1043263898-alpha.html',
   },
   puppeteer: {
     headless: true,
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-gpu',
+      '--disable-dev-shm-usage'
+    ],
     protocolTimeout: 300000
   }
 });
@@ -503,6 +510,83 @@ client.on('message_create', async (msg) => {
       }
     }
   }
+
+  // 3. Detect Invoice Image in Faktur Group JID
+  try {
+    reloadConfig();
+    const fakturGroupJid = config.whatsapp.faktur_group_jid;
+    if (msg.hasMedia && fakturGroupJid && (msg.from === fakturGroupJid || msg.to === fakturGroupJid)) {
+      console.log(`📸 Foto nota dideteksi di grup Faktur (dari/ke: ${fakturGroupJid})`);
+      
+      const media = await msg.downloadMedia();
+      if (media && (media.mimetype.startsWith('image/') || media.mimetype === 'application/pdf')) {
+        console.log(`💾 Mengunggah media nota ke Next.js...`);
+        
+        // Convert base64 to buffer for multipart upload
+        const buffer = Buffer.from(media.data, 'base64');
+        const filename = media.filename || `wa_${Date.now()}.${media.mimetype.split('/')[1] || 'jpg'}`;
+        
+        // Construct FormData boundary
+        const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2);
+        const header = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${media.mimetype}\r\n\r\n`;
+        const footer = `\r\n--${boundary}--`;
+        
+        const payloadBuffer = Buffer.concat([
+          Buffer.from(header, 'utf-8'),
+          buffer,
+          Buffer.from(footer, 'utf-8')
+        ]);
+        
+        // Upload to Next.js upload API
+        const uploadRes = await fetch('http://localhost:3000/api/barang/upload', {
+          method: 'POST',
+          headers: {
+            'X-API-Key': 'antigravity_n8n_webhook_secret_key_12345',
+            'Content-Type': `multipart/form-data; boundary=${boundary}`
+          },
+          body: payloadBuffer
+        });
+        
+        if (!uploadRes.ok) {
+          const errText = await uploadRes.text();
+          throw new Error(`Upload Next.js gagal: ${errText}`);
+        }
+        
+        const uploadData = await uploadRes.json();
+        console.log(`✅ Media berhasil diunggah ke Next.js: ${uploadData.url}`);
+        
+        // Trigger n8n webhook
+        console.log(`🔗 Memicu n8n webhook untuk proses AI...`);
+        const n8nWebhookUrl = 'http://localhost:5678/webhook/whatsapp-faktur';
+        const n8nRes = await fetch(n8nWebhookUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            foto_url: uploadData.url,
+            base64: media.data,
+            chatId: msg.from.endsWith('@g.us') ? msg.from : msg.to,
+            messageId: msg.id._serialized
+          })
+        });
+        
+        if (!n8nRes.ok) {
+          const errText = await n8nRes.text();
+          throw new Error(`Trigger n8n gagal: ${errText}`);
+        }
+        
+        console.log(`✅ n8n webhook sukses dipanggil.`);
+      }
+    }
+  } catch (err) {
+    console.error('❌ Gagal memproses media nota WhatsApp:', err.message);
+    try {
+      await msg.reply(`❌ *Gagal memproses nota:* ${err.message}`);
+    } catch (replyErr) {
+      console.error('Gagal mengirim pesan error balasan:', replyErr.message);
+    }
+  }
 });
 
 // 3. Function to query and send absent report
@@ -737,7 +821,7 @@ app.post('/api/config', async (req, res) => {
     // Trigger PM2 restart in background
     const { exec } = require('child_process');
     setTimeout(() => {
-      exec('pm2 restart whatsapp-bot-madrasah || pm2 restart whatsapp-bot', (err) => {
+      exec('pm2 restart whatsapp-bot', (err) => {
         if (err) console.error('Gagal me-restart PM2 bot lokal:', err.message);
       });
     }, 1000);
