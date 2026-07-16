@@ -13,8 +13,8 @@ export async function GET(request) {
     const limitVal = isNaN(limitParam) ? 2000 : Math.max(1, limitParam);
 
     let sql = `
-      SELECT al.pin, al.scan_date as date_time, al.verifymode as verified, al.inoutmode as status, 
-             p.pegawai_nama as employee_name, COALESCE(d.pembagian1_nama, 'General') as department
+      SELECT al.pin, DATE_FORMAT(al.scan_date, '%Y-%m-%d %H:%i:%s') as date_time, al.verifymode as verified, al.inoutmode as status, 
+              p.pegawai_nama as employee_name, COALESCE(d.pembagian1_nama, 'General') as department
       FROM att_log al
       LEFT JOIN pegawai p ON al.pin = p.pegawai_pin
       LEFT JOIN pembagian1 d ON p.pembagian1_id = d.pembagian1_id
