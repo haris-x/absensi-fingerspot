@@ -143,8 +143,6 @@ export async function GET(request) {
       const empLogs = logsByPin[pin] || {};
       const empLeaves = leavesByPinAndDay[pin] || {};
       const isAdmin = emp.department.toLowerCase() === 'admin';
-      const isSpecialPin006 = (pin === '006' || parseInt(pin) === 6);
-      const isSpecialPin050 = (pin === '050' || parseInt(pin) === 50);
 
       // Get division settings or fallback to default
       const divSettings = divisionSettingsMap[emp.pembagian1_id] || defaultSettings;
@@ -168,7 +166,7 @@ export async function GET(request) {
         const isSunday = day.dayOfWeek === 0;
         const isFriday = day.dayOfWeek === 5;
         const isNationalHoliday = holidaysSet.has(day.dateStr);
-        const isHoliday = isFriday || isNationalHoliday || (isSunday && isSpecialPin050); // Sunday is a normal work day, Friday is the weekly day off, Sunday is off for PIN 050
+        const isHoliday = isFriday || isNationalHoliday; // Sunday is a normal work day, Friday is the weekly day off
 
         let statusText = 'Hadir';
         let weight = 1.0;
@@ -204,13 +202,8 @@ export async function GET(request) {
               }
             } else {
               // Regular scans
-              if (durationHours < 6.0 && !isSpecialPin050) {
-                weight = 0.5;
-                statusText = 'Hadir (Setengah Hari)';
-              } else {
-                weight = 1.0;
-                statusText = 'Hadir';
-              }
+              weight = 1.0;
+              statusText = 'Hadir';
 
               // Get local hours and minutes
               const checkoutHours = lastScanDate.getHours();

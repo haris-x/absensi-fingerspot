@@ -463,8 +463,6 @@ client.on('message_create', async (msg) => {
         year: 'numeric'
       });
 
-      // Exclude PIN 050 on Sundays
-      const localDay = new Date().toLocaleDateString('en-US', { weekday: 'short', timeZone: 'Asia/Jakarta' });
       let query = `
         SELECT p.pegawai_pin as pin, p.pegawai_nama as name, COALESCE(d.pembagian1_nama, 'General') as department
         FROM pegawai p
@@ -476,9 +474,6 @@ client.on('message_create', async (msg) => {
             WHERE DATE(scan_date) = ?
           )
       `;
-      if (localDay === 'Sun') {
-        query += ` AND p.pegawai_pin NOT IN ('050', '50')`;
-      }
       query += ` ORDER BY CAST(p.pegawai_pin AS UNSIGNED) ASC`;
 
       const [rows] = await connection.execute(query, [todayStr]);
@@ -540,8 +535,6 @@ async function sendAbsentReport() {
       year: 'numeric'
     });
 
-    // Exclude PIN 050 on Sundays
-    const localDay = new Date().toLocaleDateString('en-US', { weekday: 'short', timeZone: 'Asia/Jakarta' });
     let query = `
       SELECT p.pegawai_pin as pin, p.pegawai_nama as name, COALESCE(d.pembagian1_nama, 'General') as department
       FROM pegawai p
@@ -553,9 +546,6 @@ async function sendAbsentReport() {
           WHERE DATE(scan_date) = ?
         )
     `;
-    if (localDay === 'Sun') {
-      query += ` AND p.pegawai_pin NOT IN ('050', '50')`;
-    }
     query += ` ORDER BY CAST(p.pegawai_pin AS UNSIGNED) ASC`;
 
     const [rows] = await connection.execute(query, [todayStr]);
