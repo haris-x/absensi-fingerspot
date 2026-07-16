@@ -1,0 +1,28 @@
+name: Deploy Next.js Dashboard to Oracle Cloud
+
+on:
+  push:
+    branches:
+      - main  # Memicu deploy otomatis setiap kali ada push ke branch main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Executing remote ssh commands using ssh-key
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_KEY }}
+          port: 22
+          script: |
+            cd ~/absensi-fingerspot
+            git pull origin main
+            npm install --production --legacy-peer-deps
+            npm run build
+            pm2 restart absensi-dashboard
