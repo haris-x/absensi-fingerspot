@@ -16,14 +16,43 @@ export async function GET(request) {
       );
     }
 
-    // 1. Fetch all active employees
+    // 1. Fetch all active employees (include pembagian1_id)
     const employees = await dbQuery(
-      `SELECT p.pegawai_pin as pin, p.pegawai_nama as name, COALESCE(d.pembagian1_nama, 'General') as department
+      `SELECT p.pegawai_pin as pin, p.pegawai_nama as name, p.pembagian1_id, COALESCE(d.pembagian1_nama, 'General') as department
        FROM pegawai p
        LEFT JOIN pembagian1 d ON p.pembagian1_id = d.pembagian1_id
        WHERE p.pegawai_status = 1
        ORDER BY CAST(p.pegawai_pin AS UNSIGNED) ASC`
     );
+
+    // Fetch division work hour settings
+    await dbQuery(`
+      CREATE TABLE IF NOT EXISTS web_settings (
+        pembagian1_id INT NULL UNIQUE,
+        jam_masuk TIME NOT NULL DEFAULT '08:00:00',
+        jam_terlambat TIME NOT NULL DEFAULT '08:00:00',
+        jam_pulang TIME NOT NULL DEFAULT '16:00:00',
+        FOREIGN KEY (pembagian1_id) REFERENCES pembagian1(pembagian1_id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+    `);
+
+    const settingsRows = await dbQuery('SELECT * FROM web_settings');
+    const defaultSettings = settingsRows.find(s => s.pembagian1_id === null) || {
+      jam_masuk: '08:00:00',
+      jam_terlambat: '08:00:00',
+      jam_pulang: '16:00:00'
+    };
+
+    const divisionSettingsMap = {};
+    settingsRows.forEach(s => {
+      if (s.pembagian1_id !== null) {
+        divisionSettingsMap[s.pembagian1_id] = {
+          jam_masuk: s.jam_masuk,
+          jam_terlambat: s.jam_terlambat,
+          jam_pulang: s.jam_pulang
+        };
+      }
+    });
 
     // 2. Fetch all scan logs aggregated by day (use DATE_FORMAT to return date as a string)
     const logs = await dbQuery(
@@ -117,6 +146,16 @@ export async function GET(request) {
       const isSpecialPin006 = (pin === '006' || parseInt(pin) === 6);
       const isSpecialPin050 = (pin === '050' || parseInt(pin) === 50);
 
+      // Get division settings or fallback to default
+      const divSettings = divisionSettingsMap[emp.pembagian1_id] || defaultSettings;
+      const schedInStr = divSettings.jam_masuk;      // e.g. '08:00:00'
+      const schedOutStr = divSettings.jam_pulang;    // e.g. '16:00:00'
+
+      // Parse schedule times to hours and minutes
+      const [schedInH, schedInM] = schedInStr.split(':').map(Number);
+      const [schedOutH, schedOutM] = schedOutStr.split(':').map(Number);
+      const schedOutTimeInMinutes = schedOutH * 60 + schedOutM;
+
       let hadirCount = 0;
       let absenCount = 0;
       let setengahHariCount = 0;
@@ -158,11 +197,10 @@ export async function GET(request) {
               const scanHour = firstScanDate.getHours();
               if (scanHour < 12) {
                 // Double scan in the morning -> assume checked out on time
-                const standardCheckOutStr = (isAdmin && !isSpecialPin006) ? '16:30:00' : '16:00:00';
-                checkOut = standardCheckOutStr;
+                checkOut = schedOutStr;
               } else {
                 // Double scan in the afternoon -> assume checked in on time
-                checkIn = '07:00:00';
+                checkIn = schedInStr;
               }
             } else {
               // Regular scans
@@ -179,14 +217,9 @@ export async function GET(request) {
               const checkoutMinutes = lastScanDate.getMinutes();
               const checkoutTimeInMinutes = checkoutHours * 60 + checkoutMinutes;
 
-              // Standard check-out time in minutes of the day (16:30 for Admin except PIN 006, 16:00 for Non-Admin / PIN 006)
-              const standardHours = (isAdmin && !isSpecialPin006) ? 16 : 16;
-              const standardMinutes = (isAdmin && !isSpecialPin006) ? 30 : 0;
-              const standardTimeInMinutes = standardHours * 60 + standardMinutes;
-
               // If check-out is after scheduled time, calculate overtime
-              if (checkoutTimeInMinutes > standardTimeInMinutes) {
-                lemburHours = (checkoutTimeInMinutes - standardTimeInMinutes) / 60;
+              if (checkoutTimeInMinutes > schedOutTimeInMinutes) {
+                lemburHours = (checkoutTimeInMinutes - schedOutTimeInMinutes) / 60;
                 lemburHours = Math.round(lemburHours * 100) / 100; // Round to 2 decimal places
                 totalLemburHours += lemburHours;
               }
@@ -200,12 +233,11 @@ export async function GET(request) {
             const scanHour = firstScanDate.getHours();
             if (scanHour < 12) {
               // Morning scan (check-in) -> assume checked out on time
-              const standardCheckOutStr = (isAdmin && !isSpecialPin006) ? '16:30:00' : '16:00:00';
               checkIn = firstScanDate.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-              checkOut = standardCheckOutStr;
+              checkOut = schedOutStr;
             } else {
               // Afternoon scan (check-out) -> assume checked in on time
-              checkIn = '07:00:00';
+              checkIn = schedInStr;
               checkOut = firstScanDate.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
             }
           }

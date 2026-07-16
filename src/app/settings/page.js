@@ -30,6 +30,12 @@ export default function SettingsPage() {
   const [savingConfig, setSavingConfig] = useState(false);
   const [saveResult, setSaveResult] = useState(null);
 
+  // Work Hours states
+  const [hoursConfig, setHoursConfig] = useState(null);
+  const [loadingHours, setLoadingHours] = useState(true);
+  const [savingHours, setSavingHours] = useState(false);
+  const [hoursResult, setHoursResult] = useState(null);
+
   // Load WhatsApp status and list of groups
   const loadWhatsAppSettings = async () => {
     setLoadingWa(true);
@@ -64,8 +70,82 @@ export default function SettingsPage() {
     }
   };
 
+  const loadHoursSettings = async () => {
+    setLoadingHours(true);
+    try {
+      const res = await fetch('/api/settings/hours');
+      const json = await res.json();
+      if (json.status === 'success') {
+        setHoursConfig(json.data);
+      }
+    } catch (err) {
+      console.error('Gagal mengambil pengaturan jam kerja:', err);
+    } finally {
+      setLoadingHours(false);
+    }
+  };
+
+  const handleDefaultChange = (field, value) => {
+    setHoursConfig(prev => ({
+      ...prev,
+      defaultSettings: {
+        ...prev.defaultSettings,
+        [field]: value
+      }
+    }));
+  };
+
+  const handleDivisionChange = (id, field, value) => {
+    setHoursConfig(prev => ({
+      ...prev,
+      divisionSettings: prev.divisionSettings.map(ds => {
+        if (ds.id === id) {
+          return {
+            ...ds,
+            [field]: value === '' ? null : value
+          };
+        }
+        return ds;
+      })
+    }));
+  };
+
+  const handleSaveHoursConfig = async (e) => {
+    e.preventDefault();
+    setSavingHours(true);
+    setHoursResult(null);
+    try {
+      const res = await fetch('/api/settings/hours', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(hoursConfig)
+      });
+      const json = await res.json();
+      if (json.status === 'success') {
+        setHoursResult({
+          status: 'success',
+          message: json.message
+        });
+        setTimeout(() => setHoursResult(null), 3000);
+      } else {
+        setHoursResult({
+          status: 'error',
+          message: json.message || 'Gagal menyimpan jam kerja.'
+        });
+      }
+    } catch (err) {
+      setHoursResult({
+        status: 'error',
+        message: 'Gagal menghubungi server: ' + err.message
+      });
+    } finally {
+      setSavingHours(false);
+    }
+  };
+
   useEffect(() => {
     loadWhatsAppSettings();
+    loadHoursSettings();
   }, []);
 
   const handleTestConnection = async () => {
@@ -405,6 +485,149 @@ export default function SettingsPage() {
                 </span>
               </div>
             </div>
+          </div>
+        )}
+      </div>
+
+      {/* Section 3: Pengaturan Jam Kerja Per Divisi */}
+      <div className="space-y-6">
+        <div>
+          <h2 className="text-3xl font-extrabold text-slate-800 tracking-tight flex items-center gap-3">
+            <Clock className="text-blue-600" size={28} />
+            <span>Pengaturan Jam Kerja Per Divisi</span>
+          </h2>
+          <p className="text-sm text-slate-500 mt-1">
+            Konfigurasikan jam masuk, batas terlambat, dan jam pulang secara spesifik untuk masing-masing divisi.
+          </p>
+        </div>
+
+        {loadingHours ? (
+          <div className="flex flex-col items-center justify-center py-12 bg-white rounded-2xl border border-slate-200/80 shadow-sm gap-3">
+            <RefreshCw className="animate-spin text-blue-600" size={28} />
+            <p className="text-sm font-medium text-slate-500">Memuat konfigurasi jam kerja...</p>
+          </div>
+        ) : (
+          <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm">
+            <form onSubmit={handleSaveHoursConfig} className="space-y-8">
+              {/* Default System Settings Card */}
+              <div className="p-5 bg-slate-50 border border-slate-200/80 rounded-2xl space-y-4">
+                <div>
+                  <h3 className="font-bold text-slate-800 text-base">Default Sistem</h3>
+                  <p className="text-xs text-slate-400">Digunakan sebagai fallback jika divisi tertentu belum dikonfigurasi khusus.</p>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+                  <div className="space-y-2">
+                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider">Jam Masuk</label>
+                    <input
+                      type="time"
+                      value={hoursConfig?.defaultSettings?.jam_masuk || '08:00'}
+                      onChange={(e) => handleDefaultChange('jam_masuk', e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-semibold"
+                      required
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider">Batas Terlambat</label>
+                    <input
+                      type="time"
+                      value={hoursConfig?.defaultSettings?.jam_terlambat || '08:00'}
+                      onChange={(e) => handleDefaultChange('jam_terlambat', e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-semibold"
+                      required
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider">Jam Pulang</label>
+                    <input
+                      type="time"
+                      value={hoursConfig?.defaultSettings?.jam_pulang || '16:00'}
+                      onChange={(e) => handleDefaultChange('jam_pulang', e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-semibold"
+                      required
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Division Settings Table */}
+              <div className="space-y-4">
+                <div>
+                  <h3 className="font-bold text-slate-800 text-base">Jadwal Khusus Divisi</h3>
+                  <p className="text-xs text-slate-400">Kosongkan kolom waktu (pilih --:--) jika ingin divisi tersebut mengikuti Default Sistem.</p>
+                </div>
+
+                <div className="overflow-x-auto border border-slate-200/80 rounded-2xl">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-200/80">
+                        <th className="p-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Nama Divisi</th>
+                        <th className="p-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Jam Masuk</th>
+                        <th className="p-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Batas Terlambat</th>
+                        <th className="p-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Jam Pulang</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {hoursConfig?.divisionSettings?.map((ds) => (
+                        <tr key={ds.id} className="hover:bg-slate-50/50 transition-colors">
+                          <td className="p-4 text-sm font-bold text-slate-700">{ds.name}</td>
+                          <td className="p-4">
+                            <input
+                              type="time"
+                              value={ds.jam_masuk || ''}
+                              onChange={(e) => handleDivisionChange(ds.id, 'jam_masuk', e.target.value)}
+                              className="bg-slate-50/50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-semibold"
+                            />
+                          </td>
+                          <td className="p-4">
+                            <input
+                              type="time"
+                              value={ds.jam_terlambat || ''}
+                              onChange={(e) => handleDivisionChange(ds.id, 'jam_terlambat', e.target.value)}
+                              className="bg-slate-50/50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-semibold"
+                            />
+                          </td>
+                          <td className="p-4">
+                            <input
+                              type="time"
+                              value={ds.jam_pulang || ''}
+                              onChange={(e) => handleDivisionChange(ds.id, 'jam_pulang', e.target.value)}
+                              className="bg-slate-50/50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-semibold"
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Message result */}
+              {hoursResult && (
+                <div className={`p-4 rounded-xl border text-sm font-semibold text-center ${
+                  hoursResult.status === 'success'
+                    ? 'bg-emerald-50 border-emerald-100 text-emerald-700'
+                    : 'bg-red-50 border-red-100 text-red-700'
+                }`}>
+                  {hoursResult.message}
+                </div>
+              )}
+
+              {/* Submit Button */}
+              <div className="pt-4 border-t border-slate-100 flex justify-end">
+                <button
+                  type="submit"
+                  disabled={savingHours}
+                  className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-500 text-white font-semibold text-sm rounded-xl transition shadow-md shadow-blue-500/10"
+                >
+                  {savingHours ? (
+                    <RefreshCw className="animate-spin w-4 h-4" />
+                  ) : (
+                    <Save className="w-4 h-4" />
+                  )}
+                  <span>{savingHours ? 'Menyimpan...' : 'Simpan Jam Kerja'}</span>
+                </button>
+              </div>
+            </form>
           </div>
         )}
       </div>

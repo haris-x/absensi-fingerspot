@@ -26,15 +26,36 @@ export async function GET() {
     );
     const present_today = presentTodayRows[0]?.count || 0;
 
-    // 4. Late Today (First scan of the day is after 08:00:00 AM)
+    // Ensure settings table exists and default exists
+    await dbQuery(`
+      CREATE TABLE IF NOT EXISTS web_settings (
+        pembagian1_id INT NULL UNIQUE,
+        jam_masuk TIME NOT NULL DEFAULT '08:00:00',
+        jam_terlambat TIME NOT NULL DEFAULT '08:00:00',
+        jam_pulang TIME NOT NULL DEFAULT '16:00:00',
+        FOREIGN KEY (pembagian1_id) REFERENCES pembagian1(pembagian1_id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+    `);
+    const defaultRow = await dbQuery('SELECT * FROM web_settings WHERE pembagian1_id IS NULL');
+    if (defaultRow.length === 0) {
+      await dbQuery(`
+        INSERT INTO web_settings (pembagian1_id, jam_masuk, jam_terlambat, jam_pulang) 
+        VALUES (NULL, '08:00:00', '08:00:00', '16:00:00')
+      `);
+    }
+
+    // 4. Late Today (First scan is after the division's late threshold or default late threshold)
     const lateTodayRows = await dbQuery(
       `SELECT COUNT(*) as count FROM (
-        SELECT pin, MIN(TIME(scan_date)) as first_scan
-        FROM att_log
-        WHERE DATE(scan_date) = ?
-        GROUP BY pin
+        SELECT al.pin, MIN(TIME(al.scan_date)) as first_scan, p.pembagian1_id
+        FROM att_log al
+        JOIN pegawai p ON al.pin = p.pegawai_pin
+        WHERE DATE(al.scan_date) = ?
+        GROUP BY al.pin, p.pembagian1_id
       ) AS first_scans
-      WHERE first_scan > '08:00:00'`,
+      LEFT JOIN web_settings s ON first_scans.pembagian1_id = s.pembagian1_id
+      LEFT JOIN web_settings s_def ON s_def.pembagian1_id IS NULL
+      WHERE first_scans.first_scan > COALESCE(s.jam_terlambat, s_def.jam_terlambat, '08:00:00')`,
       [todayStr]
     );
     const late_today = lateTodayRows[0]?.count || 0;
