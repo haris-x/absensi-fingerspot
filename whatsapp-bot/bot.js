@@ -85,6 +85,67 @@ function applySelfHealingPatches() {
         modified = true;
       }
 
+      // Patch 4: getChats filter out nulls
+      const targetGetChats = `    window.WWebJS.getChats = async () => {
+        const chats = window.require('WAWebCollections').Chat.getModelsArray();
+        const chatPromises = chats.map((chat) =>
+            window.WWebJS.getChatModel(chat),
+        );
+        return await Promise.all(chatPromises);
+    };`.replace(/\\r\\n/g, '\\n');
+
+      if (content.includes(targetGetChats)) {
+        content = content.replace(targetGetChats,
+`    window.WWebJS.getChats = async () => {
+        const chats = window.require('WAWebCollections').Chat.getModelsArray();
+        const chatPromises = chats.map((chat) =>
+            window.WWebJS.getChatModel(chat),
+        );
+        const results = await Promise.all(chatPromises);
+        return results.filter(c => c !== null);
+    };`
+        );
+        modified = true;
+      }
+
+      // Patch 5: getChatModel try-catch wrap
+      const targetGetChatModel = `    window.WWebJS.getChatModel = async (chat, { isChannel = false } = {}) => {
+        if (!chat) return null;
+
+        const model = chat.serialize();`.replace(/\\r\\n/g, '\\n');
+
+      if (content.includes(targetGetChatModel)) {
+        content = content.replace(targetGetChatModel,
+`    window.WWebJS.getChatModel = async (chat, { isChannel = false } = {}) => {
+        if (!chat) return null;
+        try {
+            const model = chat.serialize();`
+        );
+        modified = true;
+      }
+
+      const targetGetChatModelEnd = `        delete model.msgs;
+        delete model.msgUnsyncedButtonReplyMsgs;
+        delete model.unsyncedButtonReplies;
+
+        return model;
+    };`.replace(/\\r\\n/g, '\\n');
+
+      if (content.includes(targetGetChatModelEnd)) {
+        content = content.replace(targetGetChatModelEnd,
+`        delete model.msgs;
+        delete model.msgUnsyncedButtonReplyMsgs;
+        delete model.unsyncedButtonReplies;
+
+        return model;
+        } catch (err) {
+            return null;
+        }
+    };`
+        );
+        modified = true;
+      }
+
       if (modified) {
         fs.writeFileSync(utilsPath, content, 'utf8');
         console.log('✅ Self-healing patch successfully applied to Utils.js');
