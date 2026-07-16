@@ -377,7 +377,7 @@ client.on('ready', async () => {
   setTimeout(async () => {
     try {
       const chats = await client.getChats();
-      const groups = chats.filter(chat => chat.isGroup);
+      const groups = chats.filter(chat => chat.isGroup || (chat.id && chat.id._serialized && chat.id._serialized.endsWith('@g.us')));
 
       console.log('\n=============================================================');
       console.log('=== DAFTAR GRUP WHATSAPP ANDA ===');
@@ -1060,6 +1060,11 @@ app.get('/api/groups', async (req, res) => {
   }
 
   try {
+    console.log(`[API Groups] Total chats retrieved: ${chats.length}`);
+    chats.forEach(c => {
+      console.log(` - Chat JID: ${c.id ? (c.id._serialized || c.id) : 'unknown'} | Name: ${c.name} | isGroup: ${c.isGroup}`);
+    });
+
     const groups = chats
       .filter(chat => chat.isGroup || (chat.id && chat.id._serialized && chat.id._serialized.endsWith('@g.us')))
       .map(g => ({
