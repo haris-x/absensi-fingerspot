@@ -1,10 +1,144 @@
+const fs = require('fs');
+const path = require('path');
+
+// Self-healing patches for whatsapp-web.js library to prevent IndexedDB crashes
+function applySelfHealingPatches() {
+  try {
+    const utilsPath = path.join(__dirname, 'node_modules', 'whatsapp-web.js', 'src', 'util', 'Injected', 'Utils.js');
+    if (fs.existsSync(utilsPath)) {
+      let content = fs.readFileSync(utilsPath, 'utf8');
+      
+      // Normalize line endings to LF (\n) to make matching robust across Windows/Linux/macOS
+      content = content.replace(/\r\n/g, '\n');
+      let modified = false;
+
+      // Patch 1: Group Metadata update
+      const targetGroup = '            await groupMetadata.update(chatWid);';
+      if (content.includes(targetGroup)) {
+        content = content.replace(targetGroup, 
+`            try {
+                if (groupMetadata && typeof groupMetadata.update === 'function') {
+                    await groupMetadata.update(chatWid);
+                }
+            } catch (e) {
+                // Ignore IndexedDB errors on metadata update
+            }`
+        );
+        modified = true;
+      }
+
+      // Patch 2: Newsletter Metadata update
+      const targetNews = '            await newsletterMetadata.update(chat.id);';
+      if (content.includes(targetNews)) {
+        content = content.replace(targetNews,
+`            try {
+                if (newsletterMetadata && typeof newsletterMetadata.update === 'function') {
+                    await newsletterMetadata.update(chat.id);
+                }
+            } catch (e) {
+                // Ignore IndexedDB error for newsletter update
+            }`
+        );
+        modified = true;
+      }
+
+      // Patch 3: Last Message retrieval
+      const targetMsg = `        model.lastMessage = null;
+        if (model.msgs && model.msgs.length) {
+            const lastMessage = window
+                .require('WAWebCollections')
+                .Msg.get(chat.lastReceivedKey._serialized) ||
+                (
+                    await window
+                        .require('WAWebCollections')
+                        .Msg.getMessagesById([chat.lastReceivedKey._serialized])
+                )?.messages?.[0];
+            lastMessage &&
+                (model.lastMessage =
+                    window.WWebJS.getMessageModel(lastMessage));
+        }`.replace(/\r\n/g, '\n');
+
+      if (content.includes(targetMsg)) {
+        content = content.replace(targetMsg,
+`        model.lastMessage = null;
+        if (model.msgs && model.msgs.length) {
+            try {
+                const key = chat.lastReceivedKey ? (chat.lastReceivedKey._serialized || chat.lastReceivedKey.id || chat.lastReceivedKey) : null;
+                if (key && typeof key === 'string') {
+                    const lastMessage = window
+                        .require('WAWebCollections')
+                        .Msg.get(key) ||
+                        (
+                            await window
+                                .require('WAWebCollections')
+                                .Msg.getMessagesById([key])
+                        )?.messages?.[0];
+                    lastMessage &&
+                        (model.lastMessage =
+                            window.WWebJS.getMessageModel(lastMessage));
+                }
+            } catch (e) {
+                // Ignore IndexedDB error for lastMessage retrieval
+            }
+        }`
+        );
+        modified = true;
+      }
+
+      if (modified) {
+        fs.writeFileSync(utilsPath, content, 'utf8');
+        console.log('✅ Self-healing patch successfully applied to Utils.js');
+      }
+    }
+
+    const clientPath = path.join(__dirname, 'node_modules', 'whatsapp-web.js', 'src', 'Client.js');
+    if (fs.existsSync(clientPath)) {
+      let content = fs.readFileSync(clientPath, 'utf8');
+      content = content.replace(/\r\n/g, '\n');
+      
+      const targetClient = 
+`    async getChats() {
+        const chats = await this.pupPage.evaluate(async () => {
+            return await window.WWebJS.getChats();
+        });
+
+        return chats.map((chat) => ChatFactory.create(this, chat));
+    }`.replace(/\r\n/g, '\n');
+      
+      if (content.includes(targetClient)) {
+        const replacementClient = 
+`    async getChats() {
+        const chats = await this.pupPage.evaluate(async () => {
+            try {
+                return await window.WWebJS.getChats();
+            } catch (err) {
+                return { error: err.message || String(err), stack: err.stack };
+            }
+        });
+
+        if (chats && chats.error) {
+            throw new Error(\`Browser-side getChats failed: \${chats.error}\\nStack: \${chats.stack}\`);
+        }
+
+        return chats.map((chat) => ChatFactory.create(this, chat));
+    }`;
+        content = content.replace(targetClient, replacementClient);
+        fs.writeFileSync(clientPath, content, 'utf8');
+        console.log('✅ Self-healing patch successfully applied to Client.js');
+      }
+    }
+  } catch (err) {
+    console.error('⚠️ Failed to apply self-healing patches to whatsapp-web.js:', err.message);
+  }
+}
+
+applySelfHealingPatches();
+
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const mysql = require('mysql2/promise');
 const cron = require('node-cron');
 const express = require('express');
-const fs = require('fs');
-const path = require('path');
 
 // 1. Load environment variables from .env.local at the project root
 require('dotenv').config({ path: path.join(__dirname, '..', '.env.local') });
