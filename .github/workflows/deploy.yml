@@ -22,7 +22,7 @@ jobs:
           port: 22
           script: |
             cd ~/absensi-fingerspot
-            git pull origin main
-            npm install --production --legacy-peer-deps
+            git pull origin absensi-madrasah
+            npm install --legacy-peer-deps
             npm run build
             pm2 restart absensi-dashboard
