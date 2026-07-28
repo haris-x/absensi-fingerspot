@@ -16,16 +16,17 @@ const { migrate: uploadToTiDB } = require('./migrate-to-tidb');
 /**
  * Sinkronisasi data attendance dengan auto-fallback
  *
+ * @param {boolean} force - jika true, bypass mtime check (Telnet) dan paksa download penuh
  * @returns {Object} { status, message, stats, duration, deviceInfo, method }
  */
-async function syncFromDevice() {
+async function syncFromDevice(force = false) {
   const startTime = Date.now();
   let lastError = null;
 
   // ========== 1. COBA METODE TELNET ==========
   console.log('\n🔄 [Sync] Mencoba metode Telnet (langsung ke Oracle DB)...');
   try {
-    const result = await telnetSync.syncFromDevice();
+    const result = await telnetSync.syncFromDevice(force);
 
     if (result.status === 'success') {
       console.log('✅ [Sync] Metode Telnet berhasil!');

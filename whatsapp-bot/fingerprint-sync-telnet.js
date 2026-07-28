@@ -59,10 +59,46 @@ function getConfig() {
 }
 
 /**
- * Format Date ke string 'YYYY-MM-DD HH:MM:SS' (UTC)
+ * Format Date ke String 'YYYY-MM-DD HH:MM:SS' (UTC)
  */
 function formatDateTimeUTC(date) {
   return date.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+// Path untuk menyimpan state sync terakhir (mtime check)
+const SYNC_STATE_PATH = path.join(__dirname, '.sync-state.json');
+
+/**
+ * Baca state sync terakhir dari file lokal
+ * @returns {Object|null} { last_mtime, last_file_size, last_sync_at } atau null jika belum ada
+ */
+function loadSyncState() {
+  try {
+    if (!fs.existsSync(SYNC_STATE_PATH)) return null;
+    const content = fs.readFileSync(SYNC_STATE_PATH, 'utf8');
+    return JSON.parse(content);
+  } catch (e) {
+    console.warn(`⚠️ Gagal membaca sync state: ${e.message}`);
+    return null;
+  }
+}
+
+/**
+ * Simpan state sync terakhir ke file lokal
+ * @param {number} mtime - mtime epoch dari file attend.dat di mesin
+ * @param {number} fileSize - ukuran file attend.dat
+ */
+function saveSyncState(mtime, fileSize) {
+  try {
+    const state = {
+      last_mtime: mtime,
+      last_file_size: fileSize,
+      last_sync_at: new Date().toISOString(),
+    };
+    fs.writeFileSync(SYNC_STATE_PATH, JSON.stringify(state, null, 2), 'utf8');
+  } catch (e) {
+    console.warn(`⚠️ Gagal menyimpan sync state: ${e.message}`);
+  }
 }
 
 /**
@@ -401,9 +437,10 @@ async function insertToDatabase(records, dbConfig) {
 /**
  * Sinkronisasi data attendance via Telnet
  *
- * @returns {Object} { status, message, stats: { deviceLogs, inserted, skipped, errors }, duration, deviceInfo }
+ * @param {boolean} force - jika true, bypass mtime check dan paksa download penuh
+ * @returns {Object} { status, message, stats: { deviceLogs, inserted, skipped, errors }, duration, deviceInfo, skipped_by_mtime }
  */
-async function syncFromDevice() {
+async function syncFromDevice(force = false) {
   const config = getConfig();
   const startTime = Date.now();
 
@@ -429,24 +466,60 @@ async function syncFromDevice() {
     await session.connect();
     console.log('✅ Terhubung ke mesin via Telnet.');
 
-    // ========== 2. CEK UKURAN FILE attend.dat ==========
-    console.log('📊 Mengecek ukuran file attend.dat...');
-    const statOutput = await session.exec('stat -c %s /mnt/data/attend.dat 2>/dev/null');
-    // Output: "<command echo>\r\n<size>\r\n[@buildroot /]# "
-    // Extract number from the line after command echo (skip first line containing "stat")
+    // ========== 2. CEK UKURAN + MTIME FILE attend.dat ==========
+    console.log('📊 Mengecek ukuran dan mtime file attend.dat...');
+    const statOutput = await session.exec('stat -c "%s %Y" /mnt/data/attend.dat 2>/dev/null');
+    // Output: "<command echo>\r\n<size> <mtime>\r\n[@buildroot /]# "
     const statLines = statOutput.split('\r\n').map(l => l.trim()).filter(l => l.length > 0);
     let fileSize = 0;
+    let fileMtime = 0;
     for (const line of statLines) {
       // Skip command echo (contains "stat") and prompt (contains "#")
       if (line.includes('stat') || line.includes('#')) continue;
-      const m = line.match(/^(\d+)$/);
-      if (m) { fileSize = parseInt(m[1]); break; }
+      // Match: "<size> <mtime>" (two numbers separated by space)
+      const m = line.match(/^(\d+)\s+(\d+)$/);
+      if (m) {
+        fileSize = parseInt(m[1]);
+        fileMtime = parseInt(m[2]);
+        break;
+      }
+      // Fallback: single number (size only, mtime not available)
+      const singleMatch = line.match(/^(\d+)$/);
+      if (singleMatch) {
+        fileSize = parseInt(singleMatch[1]);
+        break;
+      }
     }
 
     if (fileSize === 0) {
       throw new Error('File attend.dat tidak ditemukan atau kosong di mesin.');
     }
-    console.log(`📊 Ukuran attend.dat: ${fileSize} bytes (${Math.ceil(fileSize / BS)} blocks)`);
+    console.log(`📊 attend.dat: ${fileSize} bytes, mtime: ${fileMtime} (${fileMtime ? new Date(fileMtime * 1000).toISOString() : 'unknown'})`);
+
+    // ========== 2b. CEK MTIME — SKIP JIKA TIDAK ADA DATA BARU ==========
+    if (!force && fileMtime > 0) {
+      const syncState = loadSyncState();
+      if (syncState && syncState.last_mtime === fileMtime) {
+        const duration = Date.now() - startTime;
+        const lastSync = syncState.last_sync_at ? new Date(syncState.last_sync_at).toISOString() : 'unknown';
+        console.log(`⏭️ Skip download: mtime sama (${fileMtime}). Tidak ada data baru sejak sync terakhir (${lastSync}).`);
+        return {
+          status: 'success',
+          message: `Tidak ada data baru di mesin. File attend.dat tidak berubah sejak sync terakhir (${lastSync}).`,
+          stats,
+          duration,
+          deviceInfo: { userCounts: '-', logCounts: '-', logCapacity: '-' },
+          skipped_by_mtime: true,
+        };
+      }
+      if (syncState) {
+        console.log(`📊 Mtime berubah: ${syncState.last_mtime} → ${fileMtime}. Ada data baru, lanjut download.`);
+      } else {
+        console.log('📊 Sync state belum ada (first run). Lanjut download penuh.');
+      }
+    } else if (force) {
+      console.log('🔄 Force sync: bypass mtime check, paksa download penuh.');
+    }
 
     // ========== 3. DOWNLOAD attend.dat ==========
     console.log('📥 Mendownload attend.dat via dd + base64...');
@@ -475,6 +548,12 @@ async function syncFromDevice() {
     const insertStats = await insertToDatabase(records, config.db);
     stats.inserted = insertStats.inserted;
     stats.skipped = insertStats.skipped;
+
+    // ========== 6. SIMPAN SYNC STATE (mtime) ==========
+    if (fileMtime > 0) {
+      saveSyncState(fileMtime, fileSize);
+      console.log(`💾 Sync state disimpan: mtime=${fileMtime}, size=${fileSize}`);
+    }
 
     const duration = Date.now() - startTime;
     console.log(`\n✅ Sinkronisasi Telnet selesai dalam ${(duration / 1000).toFixed(1)} detik.`);

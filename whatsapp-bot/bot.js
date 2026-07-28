@@ -259,7 +259,7 @@ const { syncFromDevice, checkDeviceStatus } = require('./sync-fallback');
 let isSyncing = false;
 let lastSyncResult = null;
 
-async function triggerFingerprintSync() {
+async function triggerFingerprintSync(force = false) {
   if (isSyncing) {
     console.log('⚠️ Sinkronisasi sedang berjalan, menunggu selesai...');
     return lastSyncResult;
@@ -267,16 +267,9 @@ async function triggerFingerprintSync() {
 
   isSyncing = true;
   try {
-    console.log('🔄 Memulai sinkronisasi data mesin fingerprint...');
-    lastSyncResult = await syncFromDevice();
-    console.log(`✅ Sinkronisasi lokal selesai: ${lastSyncResult.message}`);
-    
-    // Only upload to TiDB Cloud if local sync was successful
-    if (lastSyncResult.status === 'success') {
-      console.log('🚀 Memulai upload data baru ke TiDB Cloud...');
-      await uploadToTiDB();
-      console.log('✅ Upload data ke TiDB Cloud selesai.');
-    }
+    console.log(`🔄 Memulai sinkronisasi data mesin fingerprint${force ? ' (force)' : ''}...`);
+    lastSyncResult = await syncFromDevice(force);
+    console.log(`✅ Sinkronisasi selesai: ${lastSyncResult.message}`);
     return lastSyncResult;
   } catch (err) {
     console.error(`❌ GAGAL Sinkronisasi Fingerprint: ${err.message}`);
@@ -1183,15 +1176,20 @@ app.post('/api/sync', async (req, res) => {
   }
 
   // Start sync in background (don't await) so we can respond within Cloudflare's 100s limit
-  triggerFingerprintSync().catch(err => {
+  // Read force flag from request body (default: false)
+  const force = req.body && req.body.force === true;
+  triggerFingerprintSync(force).catch(err => {
     console.error('Background sync error:', err.message);
   });
 
   // Respond immediately that sync has started
   res.json({
     status: 'success',
-    message: 'Sinkronisasi dimulai di background. Cek /api/sync (GET) untuk hasil.',
+    message: force
+      ? 'Sinkronisasi (force) dimulai di background. Cek /api/sync (GET) untuk hasil.'
+      : 'Sinkronisasi dimulai di background. Cek /api/sync (GET) untuk hasil.',
     running: true,
+    force,
   });
 });
 

@@ -34,6 +34,7 @@ whatsapp-bot/config.json
 whatsapp-bot/.wwebjs_auth/
 whatsapp-bot/.wwebjs_cache/
 whatsapp-bot/qr.html
+whatsapp-bot/.sync-state.json
 
 # vercel
 .vercel
