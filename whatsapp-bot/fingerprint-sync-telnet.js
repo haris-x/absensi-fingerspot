@@ -42,6 +42,7 @@ function getConfig() {
       port: parseInt(process.env.DEVICE_PORT || '23'),
       telnet_user: process.env.DEVICE_TELNET_USER || 'guest',
       telnet_pass: process.env.DEVICE_TELNET_PASS || 'guest',
+      sn: process.env.DEVICE_SN || '616230023351388',
     },
     db: {
       // Target: MySQL Lokal (127.0.0.1:3309)
@@ -59,10 +60,27 @@ function getConfig() {
 }
 
 /**
- * Format Date ke String 'YYYY-MM-DD HH:MM:SS' (UTC)
+ * Format Date epoch menjadi String 'YYYY-MM-DD HH:MM:SS' sesuai jam lokal mesin (tanpa offset UTC)
  */
-function formatDateTimeUTC(date) {
-  return date.toISOString().slice(0, 19).replace('T', ' ');
+function formatDateTimeLocal(date) {
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(date.getUTCDate()).padStart(2, '0');
+  const hh = String(date.getUTCHours()).padStart(2, '0');
+  const mm = String(date.getUTCMinutes()).padStart(2, '0');
+  const ss = String(date.getUTCSeconds()).padStart(2, '0');
+  return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
+}
+
+/**
+ * Buat att_id persis sesuai format Fingerspot Downloader: DDMMYYYYHHMMSS + SN + PIN
+ * Contoh: "28072026180506616230023351388037"
+ */
+function generateAttId(scanDateStr, sn, pin) {
+  const [datePart, timePart] = scanDateStr.split(' ');
+  const [y, m, d] = datePart.split('-');
+  const [hh, mm, ss] = (timePart || '00:00:00').split(':');
+  return `${d}${m}${y}${hh}${mm}${ss}${sn}${pin}`;
 }
 
 // Path untuk menyimpan state sync terakhir (mtime check)
@@ -279,6 +297,55 @@ class TelnetSession {
     return Buffer.concat(chunks);
   }
 
+  /**
+   * Download file range (misal untuk incremental sync)
+   * @param {string} devicePath - path file di mesin
+   * @param {number} startOffset - byte offset awal
+   * @param {number} length - jumlah byte yang mau didownload
+   * @param {function} onProgress - callback (downloaded, total)
+   * @returns {Buffer} buffer data
+   */
+  async downloadFileRange(devicePath, startOffset, length, onProgress) {
+    const chunks = [];
+    let bytesFetched = 0;
+
+    while (bytesFetched < length) {
+      const currentPos = startOffset + bytesFetched;
+      const count = Math.min(BS, length - bytesFetched);
+      const cmd = `dd if=${devicePath} bs=1 skip=${currentPos} count=${count} 2>/dev/null | base64; echo __CR${bytesFetched}__`;
+
+      const response = await this.exec(cmd);
+
+      const markerRe = /__CR\d+__/g;
+      const matches = [...response.matchAll(markerRe)];
+      if (matches.length === 0) {
+        throw new Error(`Marker range tidak ditemukan pada byte pos ${currentPos}`);
+      }
+      const lastMatch = matches[matches.length - 1];
+      const before = response.slice(0, lastMatch.index);
+
+      let b64 = '';
+      for (const line of before.split('\r\n')) {
+        const t = line.trim();
+        if (/^[A-Za-z0-9+/=]+$/.test(t) && t.length > 0) b64 += t;
+      }
+
+      if (b64.length > 0) {
+        const bin = Buffer.from(b64, 'base64');
+        chunks.push(bin);
+        bytesFetched += bin.length;
+      } else {
+        break;
+      }
+
+      if (onProgress) {
+        onProgress(bytesFetched, length);
+      }
+    }
+
+    return Buffer.concat(chunks);
+  }
+
   disconnect() {
     if (this.socket) {
       try { this.socket.destroy(); } catch (e) {}
@@ -288,11 +355,12 @@ class TelnetSession {
 }
 
 /**
- * Parse attend.dat file
+ * Parse attend.dat file penuh
  * @param {Buffer} data - raw file content
- * @returns {Array} array of { scan_date, pin, verifymode, inoutmode, reserved, work_code }
+ * @param {string} sn - serial number perangkat
+ * @returns {Array} array of { sn, scan_date, pin, verifymode, inoutmode, reserved, work_code, att_id }
  */
-function parseAttendLog(data) {
+function parseAttendLog(data, sn = '616230023351388') {
   // Verify header
   const magic = data.slice(0, 8).toString('latin1');
   if (magic !== HEADER_MAGIC) {
@@ -311,19 +379,58 @@ function parseAttendLog(data) {
     if (ts < MIN_VALID_TIMESTAMP) continue;
 
     const scanDate = new Date(ts * 1000);
-    const scanDateStr = formatDateTimeUTC(scanDate);
-    const verifymode = data[off + 9] || 0;
-    const inoutmode = data[off + 10] || 0;
-    const reserved = data[off + 11] || 0;
-    const workCode = data.readUInt32LE(off + 12) || 0;
+    const scanDateStr = formatDateTimeLocal(scanDate);
+    const pinFormatted = String(pin).padStart(3, '0');
+    const verifymode = data[off + 9] || 1;
+    const attId = generateAttId(scanDateStr, sn, pinFormatted);
 
     records.push({
+      sn: sn,
       scan_date: scanDateStr,
-      pin: String(pin).padStart(3, '0'),
-      verifymode,
-      inoutmode,
-      reserved,
-      work_code: workCode,
+      pin: pinFormatted,
+      verifymode: verifymode,
+      inoutmode: 2, // Standard Fingerspot Downloader inoutmode value
+      reserved: 0,
+      work_code: 0,
+      att_id: attId,
+    });
+  }
+
+  return records;
+}
+
+/**
+ * Parse chunk delta dari attend.dat (tanpa header 40 byte)
+ * @param {Buffer} data - raw partial buffer (harus kelipatan 16 byte)
+ * @param {string} sn - serial number perangkat
+ * @returns {Array} array of records
+ */
+function parsePartialAttendLog(data, sn = '616230023351388') {
+  const totalRecords = Math.floor(data.length / RECORD_SIZE);
+  const records = [];
+
+  for (let i = 0; i < totalRecords; i++) {
+    const off = i * RECORD_SIZE;
+    const ts = data.readUInt32LE(off);
+    const pin = data.readUInt32LE(off + 4);
+
+    if (ts < MIN_VALID_TIMESTAMP) continue;
+
+    const scanDate = new Date(ts * 1000);
+    const scanDateStr = formatDateTimeLocal(scanDate);
+    const pinFormatted = String(pin).padStart(3, '0');
+    const verifymode = data[off + 9] || 1;
+    const attId = generateAttId(scanDateStr, sn, pinFormatted);
+
+    records.push({
+      sn: sn,
+      scan_date: scanDateStr,
+      pin: pinFormatted,
+      verifymode: verifymode,
+      inoutmode: 2,
+      reserved: 0,
+      work_code: 0,
+      att_id: attId,
     });
   }
 
@@ -374,14 +481,14 @@ async function insertToDatabase(records, dbConfig) {
     for (let i = 0; i < records.length; i += BATCH) {
       const batch = records.slice(i, i + BATCH);
       const values = batch.map(r => [
-        null,           // sn (unknown from device)
+        r.sn,           // sn (Serial Number)
         r.scan_date,    // scan_date
         r.pin,          // pin
         r.verifymode,   // verifymode
         r.inoutmode,    // inoutmode
         r.reserved,     // reserved
         r.work_code,    // work_code
-        null,           // att_id
+        r.att_id,       // att_id
       ]);
       const placeholders = values.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
       const flat = values.flat();
@@ -496,75 +603,108 @@ async function syncFromDevice(force = false) {
     }
     console.log(`📊 attend.dat: ${fileSize} bytes, mtime: ${fileMtime} (${fileMtime ? new Date(fileMtime * 1000).toISOString() : 'unknown'})`);
 
-    // ========== 2b. CEK MTIME — SKIP JIKA TIDAK ADA DATA BARU ==========
-    if (!force && fileMtime > 0) {
-      const syncState = loadSyncState();
-      if (syncState && syncState.last_mtime === fileMtime) {
-        const duration = Date.now() - startTime;
-        const lastSync = syncState.last_sync_at ? new Date(syncState.last_sync_at).toISOString() : 'unknown';
-        console.log(`⏭️ Skip download: mtime sama (${fileMtime}). Tidak ada data baru sejak sync terakhir (${lastSync}).`);
-        return {
-          status: 'success',
-          message: `Tidak ada data baru di mesin. File attend.dat tidak berubah sejak sync terakhir (${lastSync}).`,
-          stats,
-          duration,
-          deviceInfo: { userCounts: '-', logCounts: '-', logCapacity: '-' },
-          skipped_by_mtime: true,
-        };
+    // ========== 2b. CEK MTIME & INCREMENTAL SYNC ==========
+    const syncState = loadSyncState();
+
+    if (!force && fileMtime > 0 && syncState && syncState.last_mtime === fileMtime) {
+      const duration = Date.now() - startTime;
+      const lastSync = syncState.last_sync_at ? new Date(syncState.last_sync_at).toISOString() : 'unknown';
+      console.log(`⏭️ Skip download: mtime sama (${fileMtime}). Tidak ada data baru sejak sync terakhir (${lastSync}).`);
+      return {
+        status: 'success',
+        message: `Tidak ada data baru di mesin. File attend.dat tidak berubah sejak sync terakhir (${lastSync}).`,
+        stats,
+        duration,
+        deviceInfo: { userCounts: '-', logCounts: '-', logCapacity: '-' },
+        skipped_by_mtime: true,
+      };
+    }
+
+    // Cek apakah Incremental Sync dapat dilakukan (hanya download delta baru)
+    let isIncremental = false;
+    let records = [];
+    const lastSize = syncState ? syncState.last_file_size || 0 : 0;
+
+    if (!force && lastSize >= HEADER_SIZE && fileSize > lastSize) {
+      const deltaBytes = fileSize - lastSize;
+      if (deltaBytes % RECORD_SIZE === 0) {
+        console.log(`⚡ Try Incremental Sync: Menarik ${deltaBytes} bytes data baru (offset ${lastSize}..${fileSize})...`);
+        try {
+          const deltaData = await session.downloadFileRange('/mnt/data/attend.dat', lastSize, deltaBytes);
+          records = parsePartialAttendLog(deltaData, config.device.sn);
+          isIncremental = true;
+          console.log(`⚡ Incremental Sync berhasil parse ${records.length} record baru.`);
+        } catch (incErr) {
+          console.warn(`⚠️ Incremental Sync gagal: ${incErr.message}. Fallback ke Full Sync...`);
+          records = [];
+          isIncremental = false;
+        }
       }
-      if (syncState) {
-        console.log(`📊 Mtime berubah: ${syncState.last_mtime} → ${fileMtime}. Ada data baru, lanjut download.`);
+    }
+
+    // ========== 3. FULL SYNC (Jika Incremental tidak aktif/gagal) ==========
+    if (!isIncremental) {
+      if (force) {
+        console.log('🔄 Force sync: bypass mtime check, paksa download penuh.');
+      } else if (syncState) {
+        console.log(`📊 Mtime berubah: ${syncState.last_mtime} → ${fileMtime}. Lanjut Full Sync...`);
       } else {
-        console.log('📊 Sync state belum ada (first run). Lanjut download penuh.');
+        console.log('📊 Sync state belum ada (first run). Lanjut Full Sync...');
       }
-    } else if (force) {
-      console.log('🔄 Force sync: bypass mtime check, paksa download penuh.');
+
+      console.log('📥 Mendownload attend.dat penuh via dd + base64...');
+      const attendData = await session.downloadFile('/mnt/data/attend.dat', fileSize, (offset, total) => {
+        const pct = Math.round((offset / total) * 100);
+        console.log(`   progress: ${offset}/${total} (${pct}%)`);
+      });
+
+      if (attendData.length !== fileSize) {
+        console.warn(`⚠️ Ukuran download (${attendData.length}) != expected (${fileSize}), tetap mencoba parse.`);
+      }
+      console.log(`✅ Download selesai: ${attendData.length} bytes`);
+
+      console.log('📝 Parsing record absensi...');
+      records = parseAttendLog(attendData, config.device.sn);
+      console.log(`📝 Total record valid: ${records.length} (dari ${Math.floor((attendData.length - HEADER_SIZE) / RECORD_SIZE)} total)`);
     }
 
-    // ========== 3. DOWNLOAD attend.dat ==========
-    console.log('📥 Mendownload attend.dat via dd + base64...');
-    const attendData = await session.downloadFile('/mnt/data/attend.dat', fileSize, (offset, total) => {
-      const pct = Math.round((offset / total) * 100);
-      console.log(`   progress: ${offset}/${total} (${pct}%)`);
-    });
-
-    if (attendData.length !== fileSize) {
-      console.warn(`⚠️ Ukuran download (${attendData.length}) != expected (${fileSize}), tetap mencoba parse.`);
-    }
-    console.log(`✅ Download selesai: ${attendData.length} bytes`);
-
-    // ========== 4. PARSE RECORD ==========
-    console.log('📝 Parsing record absensi...');
-    const records = parseAttendLog(attendData);
     stats.deviceLogs = records.length;
-    console.log(`📝 Total record valid: ${records.length} (dari ${Math.floor((attendData.length - HEADER_SIZE) / RECORD_SIZE)} total)`);
 
     if (records.length === 0) {
-      throw new Error('Tidak ada record valid yang bisa di-parse dari attend.dat');
+      saveSyncState(fileMtime, fileSize);
+      const duration = Date.now() - startTime;
+      return {
+        status: 'success',
+        message: 'Sinkronisasi selesai: tidak ada record baru yang valid.',
+        stats,
+        duration,
+        deviceInfo: { userCounts: '-', logCounts: String(stats.deviceLogs), logCapacity: '-' }
+      };
     }
 
-    // ========== 5. INSERT KE ORACLE DB ==========
-    console.log(`💾 Menginsert ${records.length} record ke Oracle DB (${config.db.host}:${config.db.port})...`);
+    // ========== 4. INSERT KE DATABASE LOKAL ==========
+    console.log(`💾 Menginsert ${records.length} record (${isIncremental ? 'Incremental' : 'Full'}) ke MySQL lokal...`);
     const insertStats = await insertToDatabase(records, config.db);
     stats.inserted = insertStats.inserted;
     stats.skipped = insertStats.skipped;
 
-    // ========== 6. SIMPAN SYNC STATE (mtime) ==========
+    // ========== 5. SIMPAN SYNC STATE (mtime + size) ==========
     if (fileMtime > 0) {
       saveSyncState(fileMtime, fileSize);
       console.log(`💾 Sync state disimpan: mtime=${fileMtime}, size=${fileSize}`);
     }
 
     const duration = Date.now() - startTime;
-    console.log(`\n✅ Sinkronisasi Telnet selesai dalam ${(duration / 1000).toFixed(1)} detik.`);
+    console.log(`\n✅ Sinkronisasi Telnet (${isIncremental ? 'Incremental' : 'Full'}) selesai dalam ${(duration / 1000).toFixed(1)} detik.`);
     console.log(`   📊 Device logs: ${stats.deviceLogs}, Inserted: ${stats.inserted}, Skipped: ${stats.skipped}`);
 
     return {
       status: 'success',
-      message: `Sinkronisasi Telnet berhasil! ${stats.inserted} data baru, ${stats.skipped} duplikat dilewati.`,
+      message: `Sinkronisasi Telnet (${isIncremental ? 'Incremental' : 'Full'}) berhasil! ${stats.inserted} data baru, ${stats.skipped} duplikat dilewati.`,
       stats,
       duration,
-      deviceInfo: { userCounts: '-', logCounts: String(stats.deviceLogs), logCapacity: '-' }
+      deviceInfo: { userCounts: '-', logCounts: String(stats.deviceLogs), logCapacity: '-' },
+      isIncremental,
     };
 
   } catch (err) {
