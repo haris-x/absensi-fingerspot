@@ -1,10 +1,205 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const fs = require('fs');
+const path = require('path');
+
+// Self-healing patches for whatsapp-web.js library to prevent IndexedDB crashes
+function applySelfHealingPatches() {
+  try {
+    const utilsPath = path.join(__dirname, 'node_modules', 'whatsapp-web.js', 'src', 'util', 'Injected', 'Utils.js');
+    if (fs.existsSync(utilsPath)) {
+      let content = fs.readFileSync(utilsPath, 'utf8');
+      
+      // Normalize line endings to LF (\n) to make matching robust across Windows/Linux/macOS
+      content = content.replace(/\r\n/g, '\n');
+      let modified = false;
+
+      // Patch 1: Group Metadata update
+      const targetGroup = '            await groupMetadata.update(chatWid);';
+      if (content.includes(targetGroup)) {
+        content = content.replace(targetGroup, 
+`            try {
+                if (groupMetadata && typeof groupMetadata.update === 'function') {
+                    await groupMetadata.update(chatWid);
+                }
+            } catch (e) {
+                // Ignore IndexedDB errors on metadata update
+            }`
+        );
+        modified = true;
+      }
+
+      // Patch 2: Newsletter Metadata update
+      const targetNews = '            await newsletterMetadata.update(chat.id);';
+      if (content.includes(targetNews)) {
+        content = content.replace(targetNews,
+`            try {
+                if (newsletterMetadata && typeof newsletterMetadata.update === 'function') {
+                    await newsletterMetadata.update(chat.id);
+                }
+            } catch (e) {
+                // Ignore IndexedDB error for newsletter update
+            }`
+        );
+        modified = true;
+      }
+
+      // Patch 3: Last Message retrieval
+      const targetMsg = `        model.lastMessage = null;
+        if (model.msgs && model.msgs.length) {
+            const lastMessage = window
+                .require('WAWebCollections')
+                .Msg.get(chat.lastReceivedKey._serialized) ||
+                (
+                    await window
+                        .require('WAWebCollections')
+                        .Msg.getMessagesById([chat.lastReceivedKey._serialized])
+                )?.messages?.[0];
+            lastMessage &&
+                (model.lastMessage =
+                    window.WWebJS.getMessageModel(lastMessage));
+        }`.replace(/\r\n/g, '\n');
+
+      if (content.includes(targetMsg)) {
+        content = content.replace(targetMsg,
+`        model.lastMessage = null;
+        if (model.msgs && model.msgs.length) {
+            try {
+                const key = chat.lastReceivedKey ? (chat.lastReceivedKey._serialized || chat.lastReceivedKey.id || chat.lastReceivedKey) : null;
+                if (key && typeof key === 'string') {
+                    const lastMessage = window
+                        .require('WAWebCollections')
+                        .Msg.get(key) ||
+                        (
+                            await window
+                                .require('WAWebCollections')
+                                .Msg.getMessagesById([key])
+                        )?.messages?.[0];
+                    lastMessage &&
+                        (model.lastMessage =
+                            window.WWebJS.getMessageModel(lastMessage));
+                }
+            } catch (e) {
+                // Ignore IndexedDB error for lastMessage retrieval
+            }
+        }`
+        );
+        modified = true;
+      }
+
+      // Patch 4: getChats filter out nulls
+      const targetGetChats = `    window.WWebJS.getChats = async () => {
+        const chats = window.require('WAWebCollections').Chat.getModelsArray();
+        const chatPromises = chats.map((chat) =>
+            window.WWebJS.getChatModel(chat),
+        );
+        return await Promise.all(chatPromises);
+    };`.replace(/\r\n/g, '\n');
+
+      if (content.includes(targetGetChats)) {
+        content = content.replace(targetGetChats,
+`    window.WWebJS.getChats = async () => {
+        const chats = window.require('WAWebCollections').Chat.getModelsArray();
+        const chatPromises = chats.map((chat) =>
+            window.WWebJS.getChatModel(chat),
+        );
+        const results = await Promise.all(chatPromises);
+        return results.filter(c => c !== null);
+    };`
+        );
+        modified = true;
+      }
+
+      // Patch 5: getChatModel try-catch wrap
+      const targetGetChatModel = `    window.WWebJS.getChatModel = async (chat, { isChannel = false } = {}) => {
+        if (!chat) return null;
+
+        const model = chat.serialize();`.replace(/\r\n/g, '\n');
+
+      if (content.includes(targetGetChatModel)) {
+        content = content.replace(targetGetChatModel,
+`    window.WWebJS.getChatModel = async (chat, { isChannel = false } = {}) => {
+        if (!chat) return null;
+        try {
+            const model = chat.serialize();`
+        );
+        modified = true;
+      }
+
+      const targetGetChatModelEnd = `        delete model.msgs;
+        delete model.msgUnsyncedButtonReplyMsgs;
+        delete model.unsyncedButtonReplies;
+
+        return model;
+    };`.replace(/\r\n/g, '\n');
+
+      if (content.includes(targetGetChatModelEnd)) {
+        content = content.replace(targetGetChatModelEnd,
+`        delete model.msgs;
+        delete model.msgUnsyncedButtonReplyMsgs;
+        delete model.unsyncedButtonReplies;
+
+        return model;
+        } catch (err) {
+            return null;
+        }
+    };`
+        );
+        modified = true;
+      }
+
+      if (modified) {
+        fs.writeFileSync(utilsPath, content, 'utf8');
+        console.log('✅ Self-healing patch successfully applied to Utils.js');
+      }
+    }
+
+    const clientPath = path.join(__dirname, 'node_modules', 'whatsapp-web.js', 'src', 'Client.js');
+    if (fs.existsSync(clientPath)) {
+      let content = fs.readFileSync(clientPath, 'utf8');
+      content = content.replace(/\r\n/g, '\n');
+      
+      const targetClient = 
+`    async getChats() {
+        const chats = await this.pupPage.evaluate(async () => {
+            return await window.WWebJS.getChats();
+        });
+
+        return chats.map((chat) => ChatFactory.create(this, chat));
+    }`.replace(/\r\n/g, '\n');
+      
+      if (content.includes(targetClient)) {
+        const replacementClient = 
+`    async getChats() {
+        const chats = await this.pupPage.evaluate(async () => {
+            try {
+                return await window.WWebJS.getChats();
+            } catch (err) {
+                return { error: err.message || String(err), stack: err.stack };
+            }
+        });
+
+        if (chats && chats.error) {
+            throw new Error(\`Browser-side getChats failed: \${chats.error}\\nStack: \${chats.stack}\`);
+        }
+
+        return chats.map((chat) => ChatFactory.create(this, chat));
+    }`;
+        content = content.replace(targetClient, replacementClient);
+        fs.writeFileSync(clientPath, content, 'utf8');
+        console.log('✅ Self-healing patch successfully applied to Client.js');
+      }
+    }
+  } catch (err) {
+    console.error('⚠️ Failed to apply self-healing patches to whatsapp-web.js:', err.message);
+  }
+}
+
+applySelfHealingPatches();
+
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const mysql = require('mysql2/promise');
 const cron = require('node-cron');
 const express = require('express');
-const fs = require('fs');
-const path = require('path');
 
 // 1. Load environment variables from .env.local at the project root
 require('dotenv').config({ path: path.join(__dirname, '..', '.env.local') });
@@ -24,6 +219,7 @@ let config = {
   },
   whatsapp: {
     group_jid: process.env.WA_GROUP_JID || '',
+    faktur_group_jid: process.env.WA_FAKTUR_GROUP_JID || '',
     send_time: process.env.WA_SEND_TIME || '07:35',
     reconciliation_enabled: process.env.WA_RECONCILIATION_ENABLED !== 'false'
   },
@@ -47,6 +243,7 @@ function reloadConfig() {
       rejectUnauthorized: true
     } : undefined;
     config.whatsapp.group_jid = process.env.WA_GROUP_JID || config.whatsapp.group_jid;
+    config.whatsapp.faktur_group_jid = process.env.WA_FAKTUR_GROUP_JID || config.whatsapp.faktur_group_jid;
     config.whatsapp.send_time = process.env.WA_SEND_TIME || config.whatsapp.send_time;
     config.whatsapp.reconciliation_enabled = process.env.WA_RECONCILIATION_ENABLED !== 'false';
     config.ipos.api_url = process.env.IPOS_API_URL || config.ipos.api_url;
@@ -56,10 +253,8 @@ function reloadConfig() {
   }
 }
 
-// Helper to sync fingerprint data directly from device via TCP (replaces PowerShell GUI hack)
-const { syncFromDevice, checkDeviceStatus } = require('./fingerprint-sync');
-// Helper to migrate local database to TiDB Cloud
-const { migrate: uploadToTiDB } = require('./migrate-to-tidb');
+// Helper to sync fingerprint data via Telnet (primary) with PowerShell fallback
+const { syncFromDevice, checkDeviceStatus } = require('./sync-fallback');
 
 let isSyncing = false;
 let lastSyncResult = null;
@@ -72,7 +267,7 @@ async function triggerFingerprintSync() {
 
   isSyncing = true;
   try {
-    console.log('🔄 Memulai sinkronisasi data mesin fingerprint via TCP...');
+    console.log('🔄 Memulai sinkronisasi data mesin fingerprint...');
     lastSyncResult = await syncFromDevice();
     console.log(`✅ Sinkronisasi lokal selesai: ${lastSyncResult.message}`);
     
@@ -95,9 +290,20 @@ async function triggerFingerprintSync() {
 // 2. Initialize WhatsApp Web Client
 const client = new Client({
   authStrategy: new LocalAuth(),
+  webVersionCache: {
+    type: 'remote',
+    remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1043263898-alpha.html',
+  },
   puppeteer: {
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-gpu',
+      '--disable-dev-shm-usage'
+    ],
+    protocolTimeout: 300000
   }
 });
 
@@ -152,41 +358,39 @@ client.on('ready', async () => {
   // Delete qr.html on connection success
   const qrHtmlPath = path.join(__dirname, 'qr.html');
   if (fs.existsSync(qrHtmlPath)) {
+     try {
+       fs.unlinkSync(qrHtmlPath);
+     } catch (e) { }
+   }
+
+  // NOTE: Cron sinkronisasi harian (07:30 WIB) dipindahkan ke VPS Oracle
+  // VPS memanggil endpoint /api/sync via Cloudflare Tunnel (wa.harisx.my.id)
+  // Lihat: vps/sync-cron.js
+
+  // Retrieve and print all groups (with 5 seconds delay to allow store initialization)
+  setTimeout(async () => {
     try {
-      fs.unlinkSync(qrHtmlPath);
-    } catch (e) { }
-  }
+      const chats = await client.getChats();
+      const groups = chats.filter(chat => chat.isGroup || (chat.id && chat.id._serialized && chat.id._serialized.endsWith('@g.us')));
 
-  // Jadwalkan sinkronisasi mesin fingerprint harian setiap pukul 07:30 WIB
-  cron.schedule('30 7 * * *', () => {
-    console.log('⏰ Menjalankan sinkronisasi mesin fingerprint harian (07:30)...');
-    triggerFingerprintSync();
-  }, {
-    timezone: 'Asia/Jakarta'
-  });
+      console.log('\n=============================================================');
+      console.log('=== DAFTAR GRUP WHATSAPP ANDA ===');
+      console.log('Silakan cari nama grup target Anda, lalu salin JID-nya');
+      console.log('dan tempelkan ke kolom "group_jid" di file whatsapp-bot/config.json');
+      console.log('=============================================================');
 
-  // Retrieve and print all groups
-  try {
-    const chats = await client.getChats();
-    const groups = chats.filter(chat => chat.isGroup);
-
-    console.log('\n=============================================================');
-    console.log('=== DAFTAR GRUP WHATSAPP ANDA ===');
-    console.log('Silakan cari nama grup target Anda, lalu salin JID-nya');
-    console.log('dan tempelkan ke kolom "group_jid" di file whatsapp-bot/config.json');
-    console.log('=============================================================');
-
-    if (groups.length === 0) {
-      console.log('Nomor WhatsApp ini tidak berada di grup mana pun.');
-    } else {
-      groups.forEach(g => {
-        console.log(`- Nama: "${g.name}" | JID: ${g.id._serialized}`);
-      });
+      if (groups.length === 0) {
+        console.log('Nomor WhatsApp ini tidak berada di grup mana pun.');
+      } else {
+        groups.forEach(g => {
+          console.log(`- Nama: "${g.name}" | JID: ${g.id._serialized}`);
+        });
+      }
+      console.log('=============================================================\n');
+    } catch (err) {
+      console.error('Gagal memuat daftar grup WhatsApp pada inisialisasi:', err.message);
     }
-    console.log('=============================================================\n');
-  } catch (err) {
-    console.error('Gagal memuat daftar grup WhatsApp:', err.message);
-  }
+  }, 5000);
 });
 
 // Disconnected event
@@ -455,8 +659,6 @@ client.on('message_create', async (msg) => {
         year: 'numeric'
       });
 
-      // Exclude PIN 050 on Sundays
-      const localDay = new Date().toLocaleDateString('en-US', { weekday: 'short', timeZone: 'Asia/Jakarta' });
       let query = `
         SELECT p.pegawai_pin as pin, p.pegawai_nama as name, COALESCE(d.pembagian1_nama, 'General') as department
         FROM pegawai p
@@ -468,9 +670,6 @@ client.on('message_create', async (msg) => {
             WHERE DATE(scan_date) = ?
           )
       `;
-      if (localDay === 'Sun') {
-        query += ` AND p.pegawai_pin NOT IN ('050', '50')`;
-      }
       query += ` ORDER BY CAST(p.pegawai_pin AS UNSIGNED) ASC`;
 
       const [rows] = await connection.execute(query, [todayStr]);
@@ -498,6 +697,83 @@ client.on('message_create', async (msg) => {
       if (connection) {
         await connection.end();
       }
+    }
+  }
+
+  // 3. Detect Invoice Image in Faktur Group JID
+  try {
+    reloadConfig();
+    const fakturGroupJid = config.whatsapp.faktur_group_jid;
+    if (msg.hasMedia && fakturGroupJid && (msg.from === fakturGroupJid || msg.to === fakturGroupJid)) {
+      console.log(`📸 Foto nota dideteksi di grup Faktur (dari/ke: ${fakturGroupJid})`);
+      
+      const media = await msg.downloadMedia();
+      if (media && (media.mimetype.startsWith('image/') || media.mimetype === 'application/pdf')) {
+        console.log(`💾 Mengunggah media nota ke Next.js...`);
+        
+        // Convert base64 to buffer for multipart upload
+        const buffer = Buffer.from(media.data, 'base64');
+        const filename = media.filename || `wa_${Date.now()}.${media.mimetype.split('/')[1] || 'jpg'}`;
+        
+        // Construct FormData boundary
+        const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2);
+        const header = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${media.mimetype}\r\n\r\n`;
+        const footer = `\r\n--${boundary}--`;
+        
+        const payloadBuffer = Buffer.concat([
+          Buffer.from(header, 'utf-8'),
+          buffer,
+          Buffer.from(footer, 'utf-8')
+        ]);
+        
+        // Upload to Next.js upload API
+        const uploadRes = await fetch('http://localhost:3000/api/barang/upload', {
+          method: 'POST',
+          headers: {
+            'X-API-Key': 'antigravity_n8n_webhook_secret_key_12345',
+            'Content-Type': `multipart/form-data; boundary=${boundary}`
+          },
+          body: payloadBuffer
+        });
+        
+        if (!uploadRes.ok) {
+          const errText = await uploadRes.text();
+          throw new Error(`Upload Next.js gagal: ${errText}`);
+        }
+        
+        const uploadData = await uploadRes.json();
+        console.log(`✅ Media berhasil diunggah ke Next.js: ${uploadData.url}`);
+        
+        // Trigger n8n webhook
+        console.log(`🔗 Memicu n8n webhook untuk proses AI...`);
+        const n8nWebhookUrl = 'http://localhost:5678/webhook/whatsapp-faktur';
+        const n8nRes = await fetch(n8nWebhookUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            foto_url: uploadData.url,
+            base64: media.data,
+            chatId: msg.from.endsWith('@g.us') ? msg.from : msg.to,
+            messageId: msg.id._serialized
+          })
+        });
+        
+        if (!n8nRes.ok) {
+          const errText = await n8nRes.text();
+          throw new Error(`Trigger n8n gagal: ${errText}`);
+        }
+        
+        console.log(`✅ n8n webhook sukses dipanggil.`);
+      }
+    }
+  } catch (err) {
+    console.error('❌ Gagal memproses media nota WhatsApp:', err.message);
+    try {
+      await msg.reply(`❌ *Gagal memproses nota:* ${err.message}`);
+    } catch (replyErr) {
+      console.error('Gagal mengirim pesan error balasan:', replyErr.message);
     }
   }
 });
@@ -532,8 +808,6 @@ async function sendAbsentReport() {
       year: 'numeric'
     });
 
-    // Exclude PIN 050 on Sundays
-    const localDay = new Date().toLocaleDateString('en-US', { weekday: 'short', timeZone: 'Asia/Jakarta' });
     let query = `
       SELECT p.pegawai_pin as pin, p.pegawai_nama as name, COALESCE(d.pembagian1_nama, 'General') as department
       FROM pegawai p
@@ -545,9 +819,6 @@ async function sendAbsentReport() {
           WHERE DATE(scan_date) = ?
         )
     `;
-    if (localDay === 'Sun') {
-      query += ` AND p.pegawai_pin NOT IN ('050', '50')`;
-    }
     query += ` ORDER BY CAST(p.pegawai_pin AS UNSIGNED) ASC`;
 
     const [rows] = await connection.execute(query, [todayStr]);
@@ -592,7 +863,7 @@ app.use(express.json());
 // Enable CORS for Next.js dashboard requests
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, x-api-key');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, x-api-key, api-key, Authorization');
   res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   next();
 });
@@ -641,6 +912,44 @@ app.post('/api/send-absent', async (req, res) => {
   }
 });
 
+function formatChatId(to) {
+  const raw = (to || '').toString().trim();
+  if (!raw) return null;
+  // Group / full JID: keep as-is
+  if (raw.endsWith('@g.us') || raw.endsWith('@c.us') || raw.endsWith('@lid')) {
+    return raw;
+  }
+  let chatId = raw.replace(/\D/g, '');
+  if (!chatId) return null;
+  if (chatId.startsWith('0')) {
+    chatId = '62' + chatId.slice(1);
+  }
+  if (!chatId.endsWith('@c.us') && !chatId.endsWith('@g.us')) {
+    chatId += '@c.us';
+  }
+  return chatId;
+}
+
+function isPathAllowed(filePath) {
+  try {
+    const resolved = path.resolve(filePath);
+    const home = process.env.USERPROFILE || process.env.HOME || '';
+    const allowedRoots = [
+      path.resolve(home, 'Desktop', 'Laporan'),
+      path.resolve(home, 'Desktop'),
+      path.resolve('E:', 'Project', 'laporan'),
+      path.resolve('C:', 'Users', 'Haris', 'Desktop', 'Laporan'),
+    ];
+    return allowedRoots.some((root) => {
+      const r = root.toLowerCase();
+      const f = resolved.toLowerCase();
+      return f === r || f.startsWith(r + path.sep.toLowerCase()) || f.startsWith(r + '\\') || f.startsWith(r + '/');
+    });
+  } catch (e) {
+    return false;
+  }
+}
+
 // Send custom message to a specific number
 app.post('/api/send-message', async (req, res) => {
   if (!isReady) {
@@ -659,13 +968,9 @@ app.post('/api/send-message', async (req, res) => {
   }
 
   try {
-    // Format recipient JID: remove non-digits, replace leading 0 with 62, append @c.us
-    let chatId = to.toString().replace(/\D/g, '');
-    if (chatId.startsWith('0')) {
-      chatId = '62' + chatId.slice(1);
-    }
-    if (!chatId.endsWith('@c.us') && !chatId.endsWith('@g.us')) {
-      chatId += '@c.us';
+    const chatId = formatChatId(to);
+    if (!chatId) {
+      return res.status(400).json({ status: 'error', message: 'Nomor tujuan tidak valid.' });
     }
 
     console.log(`📩 Mengirim pesan ke ${chatId}...`);
@@ -673,13 +978,71 @@ app.post('/api/send-message', async (req, res) => {
     res.json({
       status: 'success',
       message: 'Pesan berhasil dikirim.',
-      msg_id: msg.id.id
+      msg_id: (msg && msg.id) ? (msg.id.id || msg.id._serialized || msg.id) : null
     });
   } catch (err) {
     console.error('Gagal mengirim pesan via API:', err.message);
     res.status(500).json({
       status: 'error',
       message: 'Gagal mengirim pesan: ' + err.message
+    });
+  }
+});
+
+// Send document / file attachment (Excel, PDF, etc.)
+app.post('/api/send-document', async (req, res) => {
+  if (!isReady) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'WhatsApp Bot belum siap atau belum di-scan. Silakan hubungkan WhatsApp Anda terlebih dahulu.'
+    });
+  }
+
+  const { to, filepath, caption } = req.body;
+  if (!to || !filepath) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'Parameter "to" (nomor tujuan) dan "filepath" wajib diisi.'
+    });
+  }
+
+  try {
+    const resolved = path.resolve(filepath);
+    if (!fs.existsSync(resolved)) {
+      return res.status(400).json({
+        status: 'error',
+        message: `File tidak ditemukan: ${resolved}`
+      });
+    }
+    if (!isPathAllowed(resolved)) {
+      return res.status(403).json({
+        status: 'error',
+        message: 'Path file tidak diizinkan. Hanya folder Laporan / Desktop / project laporan.'
+      });
+    }
+
+    const chatId = formatChatId(to);
+    if (!chatId) {
+      return res.status(400).json({ status: 'error', message: 'Nomor tujuan tidak valid.' });
+    }
+
+    const media = MessageMedia.fromFilePath(resolved);
+    const options = {};
+    if (caption) options.caption = String(caption);
+
+    console.log(`📎 Mengirim dokumen ke ${chatId}: ${path.basename(resolved)}`);
+    const msg = await client.sendMessage(chatId, media, options);
+    res.json({
+      status: 'success',
+      message: 'Dokumen berhasil dikirim.',
+      msg_id: (msg && msg.id) ? (msg.id.id || msg.id._serialized || msg.id) : null,
+      file: path.basename(resolved)
+    });
+  } catch (err) {
+    console.error('Gagal mengirim dokumen via API:', err.message);
+    res.status(500).json({
+      status: 'error',
+      message: 'Gagal mengirim dokumen: ' + err.message
     });
   }
 });
@@ -697,6 +1060,65 @@ app.get('/api/status', (req, res) => {
   });
 });
 
+// POST: Save config from cloud dashboard to local .env.local
+app.post('/api/config', async (req, res) => {
+  try {
+    const { groupJid, sendTime, reconciliationEnabled } = req.body;
+    const envPath = path.join(__dirname, '..', '.env.local');
+    if (!fs.existsSync(envPath)) {
+      return res.status(400).json({
+        status: 'error',
+        message: '.env.local tidak ditemukan di komputer lokal.'
+      });
+    }
+
+    let envContent = fs.readFileSync(envPath, 'utf8');
+
+    function updateEnvValue(content, key, value) {
+      const regex = new RegExp(`^${key}=.*$`, 'm');
+      if (regex.test(content)) {
+        return content.replace(regex, `${key}=${value}`);
+      } else {
+        const separator = content.endsWith('\n') ? '' : '\n';
+        return `${content}${separator}${key}=${value}`;
+      }
+    }
+
+    if (groupJid !== undefined) {
+      envContent = updateEnvValue(envContent, 'WA_GROUP_JID', groupJid);
+    }
+    if (sendTime !== undefined) {
+      envContent = updateEnvValue(envContent, 'WA_SEND_TIME', sendTime);
+    }
+    if (reconciliationEnabled !== undefined) {
+      envContent = updateEnvValue(envContent, 'WA_RECONCILIATION_ENABLED', String(reconciliationEnabled));
+    }
+
+    fs.writeFileSync(envPath, envContent, 'utf8');
+
+    // Reload the config in memory
+    reloadConfig();
+
+    // Trigger PM2 restart in background
+    const { exec } = require('child_process');
+    setTimeout(() => {
+      exec('pm2 restart whatsapp-bot', (err) => {
+        if (err) console.error('Gagal me-restart PM2 bot lokal:', err.message);
+      });
+    }, 1000);
+
+    res.json({
+      status: 'success',
+      message: 'Konfigurasi bot lokal berhasil diperbarui dan bot sedang memuat ulang.'
+    });
+  } catch (err) {
+    res.status(500).json({
+      status: 'error',
+      message: 'Gagal memperbarui konfigurasi bot lokal: ' + err.message
+    });
+  }
+});
+
 // Get list of all WhatsApp groups the bot is in
 app.get('/api/groups', async (req, res) => {
   if (!isReady) {
@@ -706,10 +1128,31 @@ app.get('/api/groups', async (req, res) => {
     });
   }
 
+  let chats;
   try {
-    const chats = await client.getChats();
+    chats = await client.getChats();
+  } catch (firstErr) {
+    console.warn('⚠️ Gagal memuat grup pada percobaan pertama. Mencoba ulang dalam 3 detik...', firstErr.message);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      chats = await client.getChats();
+    } catch (secondErr) {
+      console.error('❌ Gagal mengambil daftar grup WhatsApp setelah mencoba ulang:', secondErr.message);
+      return res.status(500).json({
+        status: 'error',
+        message: 'Gagal mengambil daftar grup: ' + secondErr.message
+      });
+    }
+  }
+
+  try {
+    console.log(`[API Groups] Total chats retrieved: ${chats.length}`);
+    chats.forEach(c => {
+      console.log(` - Chat JID: ${c.id ? (c.id._serialized || c.id) : 'unknown'} | Name: ${c.name} | isGroup: ${c.isGroup}`);
+    });
+
     const groups = chats
-      .filter(chat => chat.isGroup)
+      .filter(chat => chat.isGroup || (chat.id && chat.id._serialized && chat.id._serialized.endsWith('@g.us')))
       .map(g => ({
         id: g.id._serialized,
         name: g.name
@@ -719,47 +1162,281 @@ app.get('/api/groups', async (req, res) => {
       groups
     });
   } catch (err) {
-    console.error('Gagal mengambil daftar grup WhatsApp:', err.message);
     res.status(500).json({
       status: 'error',
-      message: 'Gagal mengambil daftar grup: ' + err.message
+      message: 'Gagal memproses daftar grup: ' + err.message
     });
   }
 });
 
-// Sync fingerprint device data to database (called from dashboard)
+// Sync fingerprint device data to database (called from dashboard or VPS cron)
+// POST: Start sync in background (returns immediately, sync runs async)
 app.post('/api/sync', async (req, res) => {
+  // If sync already running, return current status immediately
+  if (isSyncing) {
+    return res.json({
+      status: 'success',
+      message: 'Sinkronisasi sedang berjalan...',
+      running: true,
+      lastResult: lastSyncResult,
+    });
+  }
+
+  // Start sync in background (don't await) so we can respond within Cloudflare's 100s limit
+  triggerFingerprintSync().catch(err => {
+    console.error('Background sync error:', err.message);
+  });
+
+  // Respond immediately that sync has started
+  res.json({
+    status: 'success',
+    message: 'Sinkronisasi dimulai di background. Cek /api/sync (GET) untuk hasil.',
+    running: true,
+  });
+});
+
+// GET: Check sync status (for VPS cron to poll)
+app.get('/api/sync', async (req, res) => {
   try {
-    const result = await triggerFingerprintSync();
-    res.json(result);
+    const devStatus = await checkDeviceStatus();
+    res.json({
+      status: 'success',
+      running: isSyncing,
+      lastResult: lastSyncResult,
+      deviceStatus: devStatus,
+      method: lastSyncResult?.method || 'unknown',
+    });
   } catch (err) {
-    res.status(500).json({
-      status: 'error',
-      message: 'Gagal sinkronisasi: ' + err.message
+    res.json({
+      status: 'success',
+      running: isSyncing,
+      lastResult: lastSyncResult,
+      method: lastSyncResult?.method || 'unknown',
     });
   }
 });
 
 // Check fingerprint device connectivity status
-app.get('/api/device-status', async (req, res) => {
-  try {
-    const result = await checkDeviceStatus();
-    res.json({
-      status: 'success',
-      ...result
-    });
-  } catch (err) {
-    res.json({
-      status: 'error',
-      reachable: false,
-      error: err.message
-    });
+// ==========================================
+// AUTOMATED OMSET SALESMAN DISPATCHER (CRON)
+// ==========================================
+let omsetCronTask = null;
+
+function formatDateString(dateStr) {
+  if (!dateStr) return '-';
+  const parts = dateStr.split('-');
+  if (parts.length === 3) {
+    return `${parts[2]}/${parts[1]}/${parts[0]}`;
   }
+  return dateStr;
+}
+
+function generateOmsetReportText(spvKey, reportData) {
+  if (!reportData || !reportData.pivots || !reportData.pivots[spvKey]) return '';
+  const pivot = reportData.pivots[spvKey];
+  if (!pivot || !pivot.data || pivot.data.length === 0) return '';
+
+  const dateFormatted = formatDateString(reportData.start_date);
+
+  let text = `*LAPORAN KOKOLA*\n`;
+  text += `📅 *Tanggal:* ${dateFormatted}\n`;
+  text += `👤 *SE:* ${spvKey} (excl. ${pivot.exclude_code || '-'})\n`;
+  text += `-------------------------------------------\n\n`;
+
+  pivot.data.forEach(cust => {
+    text += `*${cust.customer_name}*\n`;
+    cust.items.forEach(item => {
+      const formattedCtn = Number(item.qty_ctn).toFixed(2);
+      text += `• ${item.keterangan} = *${formattedCtn} ctn* (${item.quantity} ${item.satuan.toLowerCase()})\n`;
+    });
+    text += `Total: *${Number(cust.total_ctn).toFixed(2)} ctn*\n\n`;
+  });
+
+  text += `-------------------------------------------\n`;
+  text += `*GRAND TOTAL: ${Number(pivot.grand_total_ctn).toFixed(2)} CTN*`;
+
+  return text;
+}
+
+async function recordOmsetSendLog(spvName, phoneNumber, reportDate, status, message) {
+  try {
+    const http = require('http');
+    const data = JSON.stringify({
+      spv_name: spvName,
+      phone_number: phoneNumber,
+      report_date: reportDate,
+      status: status,
+      message: message
+    });
+
+    const req = http.request('http://127.0.0.1:8080/omset/config.php?action=add_send_log', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(data)
+      }
+    });
+    req.on('error', () => {});
+    req.write(data);
+    req.end();
+  } catch (e) {}
+}
+
+async function sendOmsetReportAuto() {
+  console.log('⏰ [Omset Auto-Send] Memulai alur pengiriman harian...');
+  if (!isReady) {
+    console.warn('⚠️ [Omset Auto-Send] WA Bot belum terhubung / siap.');
+    await recordOmsetSendLog('SYSTEM', '-', '-', 'failed', 'WA Bot belum terhubung / isReady === false');
+    return { status: 'error', message: 'WA Bot belum siap.' };
+  }
+
+  // 1. Calculate date based on rules
+  const now = new Date();
+  const dayOfWeek = now.getDay(); // 0 = Sun, 1 = Mon, ..., 5 = Fri, 6 = Sat
+
+  if (dayOfWeek === 5) {
+    console.log('⏰ [Omset Auto-Send] Hari Jum\'at (Libur Perusahaan). Dilewati.');
+    await recordOmsetSendLog('SYSTEM', '-', now.toISOString().split('T')[0], 'skipped', 'Hari Jum\'at (Libur Perusahaan)');
+    return { status: 'skipped', message: 'Hari Jum\'at libur.' };
+  }
+
+  let targetDate = new Date();
+  if (dayOfWeek === 6) {
+    // Saturday -> send Thursday report (H-2)
+    targetDate.setDate(now.getDate() - 2);
+  } else {
+    // Other days -> send Yesterday report (H-1)
+    targetDate.setDate(now.getDate() - 1);
+  }
+
+  const yyyy = targetDate.getFullYear();
+  const mm = String(targetDate.getMonth() + 1).padStart(2, '0');
+  const dd = String(targetDate.getDate()).padStart(2, '0');
+  const targetDateStr = `${yyyy}-${mm}-${dd}`;
+
+  console.log(`⏰ [Omset Auto-Send] Menarik data omset untuk tanggal: ${targetDateStr}...`);
+
+  // 2. Fetch omset settings & supervisor numbers
+  let settings;
+  try {
+    const res = await fetch(`http://127.0.0.1:8080/omset/config.php?action=get_settings`);
+    settings = await res.json();
+  } catch (err) {
+    console.error('❌ [Omset Auto-Send] Gagal memuat pengaturan omset:', err.message);
+    await recordOmsetSendLog('SYSTEM', '-', targetDateStr, 'failed', 'Gagal memuat settings: ' + err.message);
+    return { status: 'error', message: err.message };
+  }
+
+  if (!settings || !settings.auto_settings || settings.auto_settings.auto_send_enabled !== '1') {
+    console.log('⏰ [Omset Auto-Send] Feature auto_send_enabled tidak aktif di Pengaturan.');
+    return { status: 'disabled', message: 'Fitur otomatis tidak aktif.' };
+  }
+
+  // 3. Fetch omset data for targetDate
+  let reportData;
+  try {
+    const resData = await fetch(`http://127.0.0.1:8080/omset/get_data.php?start_date=${targetDateStr}&end_date=${targetDateStr}`);
+    reportData = await resData.json();
+  } catch (err) {
+    console.error('❌ [Omset Auto-Send] Gagal menarik data omset:', err.message);
+    await recordOmsetSendLog('SYSTEM', '-', targetDateStr, 'failed', 'Gagal get_data.php: ' + err.message);
+    return { status: 'error', message: err.message };
+  }
+
+  if (!reportData || !reportData.success || !reportData.pivots) {
+    console.warn('⚠️ [Omset Auto-Send] Data omset kosong atau tidak valid.');
+    await recordOmsetSendLog('SYSTEM', '-', targetDateStr, 'failed', 'Data omset kosong/gagal');
+    return { status: 'error', message: 'Data omset tidak tersedia.' };
+  }
+
+  // 4. Send to all active supervisors
+  const supervisors = settings.supervisors || [];
+  const activeSpvKeys = Object.keys(reportData.pivots).filter(spvKey => {
+    if (spvKey === 'LAIN-LAIN') return false;
+    const pivot = reportData.pivots[spvKey];
+    return pivot && pivot.data && pivot.data.length > 0;
+  });
+
+  console.log(`⏰ [Omset Auto-Send] Mengirimkan laporan ke ${activeSpvKeys.length} SE: (${activeSpvKeys.join(', ')})...`);
+
+  for (const spvKey of activeSpvKeys) {
+    const text = generateOmsetReportText(spvKey, reportData);
+    if (!text) continue;
+
+    const spvObj = supervisors.find(s => s.name === spvKey);
+    let phone = spvObj ? (spvObj.phone_number || '').trim() : '';
+
+    if (!phone) {
+      console.warn(`⚠️ Nomor WA SE ${spvKey} belum diatur. Dilewati.`);
+      await recordOmsetSendLog(spvKey, '-', targetDateStr, 'failed', 'Nomor WA belum diatur');
+      continue;
+    }
+
+    let chatId = phone.replace(/\D/g, '');
+    if (chatId.startsWith('0')) chatId = '62' + chatId.slice(1);
+    if (!chatId.endsWith('@c.us') && !chatId.endsWith('@g.us')) chatId += '@c.us';
+
+    try {
+      console.log(`📩 [Omset Auto-Send] Mengirim ke ${spvKey} (${chatId})...`);
+      const msg = await client.sendMessage(chatId, text);
+      const msgId = (msg && msg.id) ? (msg.id.id || msg.id._serialized || msg.id) : null;
+      console.log(`✅ [Omset Auto-Send] Laporan SE ${spvKey} terkirim! (ID: ${msgId})`);
+      await recordOmsetSendLog(spvKey, phone, targetDateStr, 'success', `Terkirim (ID: ${msgId || 'OK'})`);
+    } catch (sendErr) {
+      console.error(`❌ [Omset Auto-Send] Gagal mengirim ke SE ${spvKey}:`, sendErr.message);
+      await recordOmsetSendLog(spvKey, phone, targetDateStr, 'failed', sendErr.message);
+    }
+
+    // 1.5 seconds delay between sends
+    await new Promise(r => setTimeout(r, 1500));
+  }
+
+  console.log('🎉 [Omset Auto-Send] Selesai mengirim seluruh laporan harian omset.');
+  return { status: 'success', message: 'Selesai.' };
+}
+
+async function setupOmsetCronScheduler() {
+  if (omsetCronTask) {
+    omsetCronTask.stop();
+    omsetCronTask = null;
+  }
+
+  try {
+    const res = await fetch('http://127.0.0.1:8080/omset/config.php?action=get_settings');
+    const settings = await res.json();
+    if (settings && settings.auto_settings && settings.auto_settings.auto_send_enabled === '1') {
+      const sendTime = settings.auto_settings.auto_send_time || '17:00';
+      const [h, m] = (sendTime || '17:00').split(':');
+      const cronExpr = `${m || '0'} ${h || '17'} * * *`;
+
+      console.log(`⏰ [Omset Cron] Auto-Send Omset Diaktifkan! Pukul ${sendTime} WIB (${cronExpr})`);
+      omsetCronTask = cron.schedule(cronExpr, async () => {
+        await sendOmsetReportAuto();
+      }, { timezone: 'Asia/Jakarta' });
+    } else {
+      console.log('⏰ [Omset Cron] Auto-Send Omset sedang Nonaktif di Pengaturan.');
+    }
+  } catch (err) {
+    console.error('⚠️ [Omset Cron] Gagal inisialisasi scheduler:', err.message);
+  }
+}
+
+// Endpoint to reload omset cron config dynamically from dashboard
+app.post('/api/reload-omset-config', async (req, res) => {
+  await setupOmsetCronScheduler();
+  res.json({ status: 'success', message: 'Omset Cron config reloaded.' });
+});
+
+// Endpoint to manually trigger omset auto-send for testing
+app.post('/api/trigger-omset-send', async (req, res) => {
+  const result = await sendOmsetReportAuto();
+  res.json(result);
 });
 
 const PORT = parseInt(process.env.WA_BOT_PORT || '3002');
 app.listen(PORT, () => {
   console.log(`🚀 API Server Bot berjalan di port ${PORT}`);
+  setupOmsetCronScheduler();
 });
 
 // 5. Schedule Automated Daily Report
@@ -781,7 +1458,7 @@ cron.schedule(cronExpr, async () => {
 
   if (isReady) {
     try {
-      // Auto sync locally and to TiDB Cloud before generating report
+      // Auto sync fingerprint before generating report
       console.log('🔄 Menjalankan sinkronisasi sebelum laporan harian...');
       await triggerFingerprintSync();
 

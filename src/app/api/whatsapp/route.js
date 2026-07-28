@@ -25,12 +25,13 @@ export async function GET(req) {
   
   const botPort = process.env.WA_BOT_PORT || '3002';
   const botBaseUrl = process.env.WA_BOT_URL || `http://127.0.0.1:${botPort}`;
+  const apiKey = process.env.WA_API_KEY || 'madrasah_wa101';
   
   if (action === 'groups') {
     try {
       const res = await fetch(`${botBaseUrl}/api/groups`, {
         headers: {
-          'x-api-key': process.env.WA_API_KEY || 'madrasah_wa101'
+          'x-api-key': apiKey
         },
         cache: 'no-store',
         signal: AbortSignal.timeout(15000) // 15 second timeout for group fetch
@@ -55,9 +56,10 @@ export async function GET(req) {
 
   // Default: Get WhatsApp Bot Status
   try {
+    console.log(`[Next.js API] Calling bot: ${botBaseUrl}/api/status with API key: "${apiKey}"`);
     const res = await fetch(`${botBaseUrl}/api/status`, {
       headers: {
-        'x-api-key': process.env.WA_API_KEY || 'madrasah_wa101'
+        'x-api-key': apiKey
       },
       cache: 'no-store',
       signal: AbortSignal.timeout(10000) // 10 second timeout
@@ -94,47 +96,68 @@ export async function POST(req) {
 
     const botPort = process.env.WA_BOT_PORT || '3002';
     const botBaseUrl = process.env.WA_BOT_URL || `http://127.0.0.1:${botPort}`;
+    const apiKey = process.env.WA_API_KEY || 'madrasah_wa101';
 
     if (body.action === 'save-config') {
       const { groupJid, sendTime, reconciliationEnabled } = body;
-      
-      const envPath = path.join(process.cwd(), '.env.local');
-      if (!fs.existsSync(envPath)) {
-        return NextResponse.json({
-          status: 'error',
-          message: '.env.local tidak ditemukan di root proyek.'
-        }, { status: 400 });
-      }
 
-      let envContent = fs.readFileSync(envPath, 'utf8');
-
-      if (groupJid !== undefined) {
-        envContent = updateEnvValue(envContent, 'WA_GROUP_JID', groupJid);
-      }
-      if (sendTime !== undefined) {
-        envContent = updateEnvValue(envContent, 'WA_SEND_TIME', sendTime);
-      }
-      if (reconciliationEnabled !== undefined) {
-        envContent = updateEnvValue(envContent, 'WA_RECONCILIATION_ENABLED', String(reconciliationEnabled));
-      }
-
-      fs.writeFileSync(envPath, envContent, 'utf8');
-
-      // Restart WhatsApp Bot PM2 process in the background
+      // 1. Send configuration update to the local WhatsApp bot via API
+      let botUpdateSuccess = false;
+      let botUpdateMessage = '';
       try {
-        await execAsync('pm2 restart whatsapp-bot');
+        const resBot = await fetch(`${botBaseUrl}/api/config`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey
+          },
+          body: JSON.stringify({ groupJid, sendTime, reconciliationEnabled }),
+          signal: AbortSignal.timeout(15000)
+        });
+
+        const jsonBot = await resBot.json();
+        if (resBot.ok && jsonBot.status === 'success') {
+          botUpdateSuccess = true;
+          botUpdateMessage = jsonBot.message;
+        } else {
+          botUpdateMessage = jsonBot.message || 'Respons API Bot tidak sukses.';
+        }
       } catch (err) {
-        console.error('Failed to restart whatsapp-bot PM2 process:', err);
+        console.error('Gagal mengirim konfigurasi ke bot lokal:', err.message);
+        botUpdateMessage = err.message;
+      }
+
+      // 2. Also save to server's own .env.local to keep in sync
+      const envPath = path.join(process.cwd(), '.env.local');
+      if (fs.existsSync(envPath)) {
+        try {
+          let envContent = fs.readFileSync(envPath, 'utf8');
+          if (groupJid !== undefined) {
+            envContent = updateEnvValue(envContent, 'WA_GROUP_JID', groupJid);
+          }
+          if (sendTime !== undefined) {
+            envContent = updateEnvValue(envContent, 'WA_SEND_TIME', sendTime);
+          }
+          if (reconciliationEnabled !== undefined) {
+            envContent = updateEnvValue(envContent, 'WA_RECONCILIATION_ENABLED', String(reconciliationEnabled));
+          }
+          fs.writeFileSync(envPath, envContent, 'utf8');
+        } catch (err) {
+          console.error('Gagal menyimpan ke .env.local server:', err.message);
+        }
+      }
+
+      if (botUpdateSuccess) {
         return NextResponse.json({
           status: 'success',
-          message: 'Konfigurasi berhasil disimpan, tetapi gagal me-restart PM2 bot secara otomatis: ' + err.message
+          message: 'Konfigurasi berhasil disimpan dan WhatsApp Bot lokal telah diperbarui.'
+        });
+      } else {
+        return NextResponse.json({
+          status: 'success', // Keep as success since server config was saved, but warn about bot
+          message: `Konfigurasi server disimpan, tetapi gagal memperbarui bot lokal: ${botUpdateMessage}`
         });
       }
-
-      return NextResponse.json({
-        status: 'success',
-        message: 'Konfigurasi berhasil disimpan dan WhatsApp Bot telah di-restart untuk menerapkan perubahan.'
-      });
     }
 
     // Default: Trigger manual absensi report send
@@ -142,7 +165,7 @@ export async function POST(req) {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
-        'x-api-key': process.env.WA_API_KEY || 'madrasah_wa101'
+        'x-api-key': apiKey
       },
       cache: 'no-store',
       signal: AbortSignal.timeout(120000) // 120 second timeout
