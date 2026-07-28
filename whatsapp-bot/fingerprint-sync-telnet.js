@@ -44,13 +44,13 @@ function getConfig() {
       telnet_pass: process.env.DEVICE_TELNET_PASS || 'guest',
     },
     db: {
-      // Target: Oracle DB via Tailscale (TIDB_* env)
-      host: process.env.TIDB_HOST || process.env.DB_HOST || '127.0.0.1',
-      port: parseInt(process.env.TIDB_PORT || process.env.DB_PORT || '3306'),
-      user: process.env.TIDB_USER || process.env.DB_USER || 'root',
-      password: process.env.TIDB_PASSWORD || process.env.DB_PASSWORD || '',
-      database: process.env.TIDB_NAME || process.env.DB_NAME || 'fin_pro',
-      ssl: (process.env.TIDB_HOST?.includes('tidbcloud.com') || process.env.TIDB_SSL === 'true') ? {
+      // Target: MySQL Lokal (127.0.0.1:3309)
+      host: process.env.DB_HOST || '127.0.0.1',
+      port: parseInt(process.env.DB_PORT || '3306'),
+      user: process.env.DB_USER || 'root',
+      password: process.env.DB_PASSWORD || '',
+      database: process.env.DB_NAME || 'fin_pro',
+      ssl: (process.env.DB_SSL === 'true') ? {
         minVersion: 'TLSv1.2',
         rejectUnauthorized: true
       } : undefined
@@ -319,7 +319,7 @@ function parseAttendLog(data) {
 
     records.push({
       scan_date: scanDateStr,
-      pin: String(pin),
+      pin: String(pin).padStart(3, '0'),
       verifymode,
       inoutmode,
       reserved,
