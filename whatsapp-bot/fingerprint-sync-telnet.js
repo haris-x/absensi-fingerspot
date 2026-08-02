@@ -112,7 +112,7 @@ function parseUserDat(data) {
     const userId = data.readUInt32LE(off + 8);
     const pinAscii = data.slice(off + 0x280, off + 0x290).toString('latin1').replace(/\0/g, '').trim();
     if (userId > 0 && pinAscii.length > 0) {
-      userMap.set(userId, pinAscii);
+      userMap.set(userId, pinAscii.padStart(3, '0'));
     }
   }
 
